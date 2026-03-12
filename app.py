@@ -2,7 +2,7 @@ import streamlit as st
 import pandas as pd
 import os
 
-# 1. CONFIGURATION ET PERSISTANCE
+# 1. CONFIGURATION
 st.set_page_config(page_title="MPP AOBD", page_icon="🏸", layout="centered")
 
 VOTES_FILE = "tous_les_votes.csv"
@@ -17,55 +17,51 @@ match_data = [
     ("Mixte 1", "👫"), ("Mixte 2", "👫")
 ]
 
-# FONCTIONS DE GESTION
-def save_to_disk(df, filename):
-    try:
-        df.to_csv(filename, index=False)
-        return True
-    except Exception as e:
-        st.error(f"Erreur sauvegarde : {e}")
-        return False
+# --- FONCTIONS DE GESTION NETTOYÉES ---
 
-def load_from_disk(filename, default_type="df"):
+def load_text(filename, default_text):
+    if os.path.exists(filename):
+        with open(filename, "r", encoding="utf-8") as f:
+            return f.read().strip()
+    return default_text
+
+def load_df(filename, columns):
     if os.path.exists(filename):
         try:
-            if default_type == "df": 
-                df = pd.read_csv(filename)
-                # SÉCURITÉ : Si le fichier est vide ou corrompu, on renvoie un DF propre
-                if df.empty or 'Joueur' not in df.columns:
-                    if filename == SCORES_FILE:
-                        return pd.DataFrame(columns=["Joueur", "Points", "AncienRang"])
-                    return pd.DataFrame()
+            df = pd.read_csv(filename)
+            if not df.empty and all(col in df.columns for col in columns):
                 return df
-            else:
-                with open(filename, "r", encoding="utf-8") as f: return f.read().strip()
-        except: return pd.DataFrame() if default_type == "df" else ""
-    # Si le fichier n'existe pas
-    if filename == SCORES_FILE:
-        return pd.DataFrame(columns=["Joueur", "Points", "AncienRang"])
-    return pd.DataFrame()
+        except:
+            pass
+    return pd.DataFrame(columns=columns)
+
+def save_disk(df, filename):
+    df.to_csv(filename, index=False)
 
 # 2. DESIGN
 st.markdown("""
     <style>
-    :root { --primary: #d32f2f; --bg: white; --text: #31333F; }
+    :root { --primary: #d32f2f; --bg: white; }
     .stApp { background-color: white !important; }
     .stApp, .stApp p, .stApp span, .stApp label, .stApp h1, .stApp h2, .stApp h3 { color: #31333F !important; }
     .header-box { background: linear-gradient(135deg, #d32f2f 0%, #b71c1c 100%); padding: 25px; border-radius: 0 0 20px 20px; text-align: center; margin: -60px -20px 10px -20px; }
     .header-box h1 { color: white !important; }
     .header-box p { color: #ffeb3b !important; }
-    .admin-msg { background-color: #f0f2f6 !important; padding: 18px; border-radius: 12px; text-align: center; font-weight: 700; font-size: 1.15rem !important; border: 1px solid #d1d5db; margin: 15px 0; }
-    .match-header { background-color: #f0f2f6 !important; padding: 10px 15px; font-weight: 700; color: #000000 !important; border-radius: 8px; margin-top: 10px; }
+    .admin-msg { background-color: #f0f2f6 !important; padding: 18px; border-radius: 12px; text-align: center; font-weight: 700; border: 1px solid #d1d5db; margin: 15px 0; }
+    .match-header { background-color: #f0f2f6 !important; padding: 10px 15px; font-weight: 700; color: black !important; border-radius: 8px; margin-top: 10px; }
     .stButton>button { background-color: #f0f2f6 !important; color: #31333F !important; border: 1px solid #d1d5db !important; border-radius: 12px; font-weight: bold; width: 100%; height: 3.5em; }
     </style>
     """, unsafe_allow_html=True)
 
+# --- INITIALISATION DES ÉTATS ---
 if not os.path.exists(LOCK_FILE):
     with open(LOCK_FILE, "w") as f: f.write("unlocked")
 
+# --- HEADER ---
 st.markdown('<div class="header-box"><h1>Le MPP de l\'AOBD</h1><p>1pt par bon prono • +3pts bonus si 8/8</p></div>', unsafe_allow_html=True)
 
-current_msg = load_from_disk(MSG_FILE, "text") or "Préparez vos pronos !"
+# --- MESSAGE ADMIN ---
+current_msg = load_text(MSG_FILE, "Préparez vos pronos !")
 st.markdown(f'<div class="admin-msg">📢 {current_msg}</div>', unsafe_allow_html=True)
 
 try:
@@ -75,10 +71,10 @@ except: pass
 st.divider()
 
 # 3. ESPACE VOTE
-is_locked = load_from_disk(LOCK_FILE, "text") == "locked"
+is_locked = load_text(LOCK_FILE, "unlocked") == "locked"
 
 if is_locked:
-    st.error("🔒 Les votes sont clos pour le moment.")
+    st.warning("🔒 Les votes sont clos pour cette rencontre.")
 else:
     st.subheader("🎯 Fais tes pronos")
     nom_input = st.text_input("Ton Prénom & Nom", placeholder="Ex: Lucas B").strip()
@@ -90,32 +86,32 @@ else:
             pronos[m_name] = st.radio(f"Vainqueur {m_name}", ["St-Nolff 🐺", "Adversaire"], key=f"v_{m_name}", horizontal=True, label_visibility="collapsed")
             
         if st.button("🚀 VALIDER MA GRILLE"):
-            df_v = load_from_disk(VOTES_FILE)
-            if not df_v.empty and 'Joueur' in df_v.columns and nom_input.lower() in df_v["Joueur"].str.lower().values:
+            df_v = load_df(VOTES_FILE, ["Joueur"])
+            if not df_v.empty and nom_input.lower() in df_v["Joueur"].str.lower().values:
                 st.warning(f"Désolé {nom_input}, ton vote est déjà enregistré !")
             else:
-                nouveau_vote = {"Joueur": nom_input}
-                for k, v in pronos.items():
-                    nouveau_vote[k] = "St-Nolff" if v == "St-Nolff 🐺" else v
-                
-                df_v = pd.concat([df_v, pd.DataFrame([nouveau_vote])], ignore_index=True)
-                if save_to_disk(df_v, VOTES_FILE):
-                    st.success("Vote bien enregistré !")
-                    st.balloons()
+                nv = {"Joueur": nom_input}
+                for k, v in pronos.items(): nv[k] = "St-Nolff" if v == "St-Nolff 🐺" else v
+                df_v = pd.concat([df_v, pd.DataFrame([nv])], ignore_index=True)
+                save_disk(df_v, VOTES_FILE)
+                st.success("Vote bien enregistré !")
+                st.balloons()
 
 st.divider()
 
 # 4. CLASSEMENT
 st.subheader("🏆 Classement Général")
-df_scores = load_from_disk(SCORES_FILE)
-if not df_scores.empty and 'Points' in df_scores.columns:
+df_scores = load_df(SCORES_FILE, ["Joueur", "Points", "AncienRang"])
+if not df_scores.empty:
+    df_scores["Points"] = pd.to_numeric(df_scores["Points"])
     df_scores = df_scores.sort_values(by="Points", ascending=False).reset_index(drop=True)
     df_scores["Rang"] = df_scores.index + 1
-    if "AncienRang" not in df_scores.columns: df_scores["AncienRang"] = 0
+    
     def get_evo(row):
         if row["AncienRang"] == 0: return "🆕"
         diff = int(row["AncienRang"]) - int(row["Rang"])
         return f"🟢 +{diff}" if diff > 0 else (f"🔴 {diff}" if diff < 0 else "〓")
+    
     df_scores["Évo"] = df_scores.apply(get_evo, axis=1)
     st.table(df_scores[["Rang", "Évo", "Joueur", "Points"]].set_index("Rang"))
 else:
@@ -135,50 +131,37 @@ with st.expander("🛠️ Administration"):
         with t1:
             reels = {m[0]: st.selectbox(f"{m[0]}", ["St-Nolff", "Adversaire"], key=f"adm_{m[0]}") for m in match_data}
             if st.button("Calculer la journée"):
-                df_v = load_from_disk(VOTES_FILE)
-                df_gen = load_from_disk(SCORES_FILE)
+                df_v = load_df(VOTES_FILE, ["Joueur"])
+                df_gen = load_df(SCORES_FILE, ["Joueur", "Points", "AncienRang"])
                 
-                # SÉCURITÉ : Recréer les colonnes si le fichier a été vidé manuellement
-                if 'Joueur' not in df_gen.columns:
-                    df_gen = pd.DataFrame(columns=["Joueur", "Points", "AncienRang"])
-
                 if not df_v.empty:
-                    # Sauvegarde du rang actuel avant mise à jour
-                    df_gen["AncienRang"] = df_gen.index + 1
-                    
+                    df_gen["AncienRang"] = range(1, len(df_gen) + 1) if not df_gen.empty else 0
                     for _, row in df_v.iterrows():
                         j_nom = row['Joueur']
-                        bons = sum(1 for m_name, _ in match_data if row[m_name] == reels[m_name])
+                        bons = sum(1 for m_n, _ in match_data if row[m_n] == reels[m_n])
                         pts = bons + (3 if bons == 8 else 0)
-                        
                         mask = df_gen['Joueur'].str.lower() == j_nom.lower()
                         if mask.any():
                             df_gen.loc[mask, 'Points'] = df_gen.loc[mask, 'Points'].astype(int) + pts
                         else:
-                            new_row = pd.DataFrame([{"Joueur": j_nom, "Points": pts, "AncienRang": 0}])
-                            df_gen = pd.concat([df_gen, new_row], ignore_index=True)
-                    
-                    save_to_disk(df_gen, SCORES_FILE)
+                            df_gen = pd.concat([df_gen, pd.DataFrame([{"Joueur": j_nom, "Points": pts, "AncienRang": 0}])], ignore_index=True)
+                    save_disk(df_gen, SCORES_FILE)
                     if os.path.exists(VOTES_FILE): os.remove(VOTES_FILE)
                     st.success("Scores mis à jour !")
                     st.rerun()
 
         with t2:
-            df_v = load_from_disk(VOTES_FILE)
-            if not df_v.empty:
-                st.write(f"Votants : {len(df_v)}")
-                st.dataframe(df_v)
-            else: st.info("Aucun vote.")
+            df_v = load_df(VOTES_FILE, ["Joueur"])
+            st.dataframe(df_v)
 
         with t3:
             nouv_msg = st.text_area("Message :", current_msg)
-            if st.button("Sauver message"):
+            if st.button("Sauver"):
                 with open(MSG_FILE, "w", encoding="utf-8") as f: f.write(nouv_msg)
                 st.rerun()
 
         with t4:
-            lock_st = load_from_disk(LOCK_FILE, "text")
-            st.write(f"Statut : **{lock_st}**")
+            st.write(f"Statut : **{load_text(LOCK_FILE, 'unlocked')}**")
             if st.button("Bloquer"):
                 with open(LOCK_FILE, "w") as f: f.write("locked")
                 st.rerun()
@@ -187,6 +170,6 @@ with st.expander("🛠️ Administration"):
                 st.rerun()
 
         with t5:
-            if st.button("RÉINITIALISER TOUT LE CLASSEMENT"):
+            if st.button("RÉINITIALISER LE CLASSEMENT"):
                 if os.path.exists(SCORES_FILE): os.remove(SCORES_FILE)
                 st.rerun()
