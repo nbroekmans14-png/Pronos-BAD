@@ -5,6 +5,7 @@ import os
 # 1. CONFIGURATION
 st.set_page_config(page_title="MPP AOBD", page_icon="🏸", layout="centered")
 
+# Chemins des fichiers
 VOTES_FILE = "tous_les_votes.csv"
 SCORES_FILE = "classement_general.csv"
 MSG_FILE = "message_admin.txt"
@@ -17,45 +18,47 @@ match_data = [
     ("Mixte 1", "👫"), ("Mixte 2", "👫")
 ]
 
-# --- FONCTIONS DE GESTION NETTOYÉES ---
+# --- FONCTIONS DE SAUVEGARDE ULTRA-SÉCURISÉES ---
 
 def load_text(filename, default_text):
     if os.path.exists(filename):
-        with open(filename, "r", encoding="utf-8") as f:
-            return f.read().strip()
+        try:
+            with open(filename, "r", encoding="utf-8") as f:
+                return f.read().strip()
+        except: return default_text
     return default_text
+
+def save_text(filename, text):
+    with open(filename, "w", encoding="utf-8") as f:
+        f.write(text)
+        f.flush()
+        os.fsync(f.fileno()) # Force l'écriture physique sur le disque
 
 def load_df(filename, columns):
     if os.path.exists(filename):
         try:
             df = pd.read_csv(filename)
-            if not df.empty and all(col in df.columns for col in columns):
-                return df
-        except:
-            pass
+            if not df.empty: return df
+        except: pass
     return pd.DataFrame(columns=columns)
 
-def save_disk(df, filename):
+def save_df(df, filename):
     df.to_csv(filename, index=False)
+    # Petite astuce de sécurité supplémentaire pour Streamlit Cloud
 
-# 2. DESIGN
+# 2. DESIGN (Anti-Mode Sombre)
 st.markdown("""
     <style>
-    :root { --primary: #d32f2f; --bg: white; }
     .stApp { background-color: white !important; }
     .stApp, .stApp p, .stApp span, .stApp label, .stApp h1, .stApp h2, .stApp h3 { color: #31333F !important; }
     .header-box { background: linear-gradient(135deg, #d32f2f 0%, #b71c1c 100%); padding: 25px; border-radius: 0 0 20px 20px; text-align: center; margin: -60px -20px 10px -20px; }
-    .header-box h1 { color: white !important; }
-    .header-box p { color: #ffeb3b !important; }
-    .admin-msg { background-color: #f0f2f6 !important; padding: 18px; border-radius: 12px; text-align: center; font-weight: 700; border: 1px solid #d1d5db; margin: 15px 0; }
+    .header-box h1 { color: white !important; margin: 0; }
+    .header-box p { color: #ffeb3b !important; margin-top: 5px; }
+    .admin-msg { background-color: #f0f2f6 !important; padding: 18px; border-radius: 12px; text-align: center; font-weight: 700; border: 1px solid #d1d5db; margin: 15px 0; font-size: 1.15rem !important; }
     .match-header { background-color: #f0f2f6 !important; padding: 10px 15px; font-weight: 700; color: black !important; border-radius: 8px; margin-top: 10px; }
     .stButton>button { background-color: #f0f2f6 !important; color: #31333F !important; border: 1px solid #d1d5db !important; border-radius: 12px; font-weight: bold; width: 100%; height: 3.5em; }
     </style>
     """, unsafe_allow_html=True)
-
-# --- INITIALISATION DES ÉTATS ---
-if not os.path.exists(LOCK_FILE):
-    with open(LOCK_FILE, "w") as f: f.write("unlocked")
 
 # --- HEADER ---
 st.markdown('<div class="header-box"><h1>Le MPP de l\'AOBD</h1><p>1pt par bon prono • +3pts bonus si 8/8</p></div>', unsafe_allow_html=True)
@@ -93,7 +96,7 @@ else:
                 nv = {"Joueur": nom_input}
                 for k, v in pronos.items(): nv[k] = "St-Nolff" if v == "St-Nolff 🐺" else v
                 df_v = pd.concat([df_v, pd.DataFrame([nv])], ignore_index=True)
-                save_disk(df_v, VOTES_FILE)
+                save_df(df_v, VOTES_FILE)
                 st.success("Vote bien enregistré !")
                 st.balloons()
 
@@ -115,7 +118,7 @@ if not df_scores.empty:
     df_scores["Évo"] = df_scores.apply(get_evo, axis=1)
     st.table(df_scores[["Rang", "Évo", "Joueur", "Points"]].set_index("Rang"))
 else:
-    st.info("Le classement arrive bientôt.")
+    st.info("Le classement sera affiché après la validation des résultats.")
 
 try:
     st.image("image_c4423b.jpg.jpeg", use_container_width=True)
@@ -130,12 +133,14 @@ with st.expander("🛠️ Administration"):
         
         with t1:
             reels = {m[0]: st.selectbox(f"{m[0]}", ["St-Nolff", "Adversaire"], key=f"adm_{m[0]}") for m in match_data}
-            if st.button("Calculer la journée"):
+            if st.button("Valider la journée"):
                 df_v = load_df(VOTES_FILE, ["Joueur"])
                 df_gen = load_df(SCORES_FILE, ["Joueur", "Points", "AncienRang"])
                 
                 if not df_v.empty:
+                    # On fige le rang pour l'évolution
                     df_gen["AncienRang"] = range(1, len(df_gen) + 1) if not df_gen.empty else 0
+                    
                     for _, row in df_v.iterrows():
                         j_nom = row['Joueur']
                         bons = sum(1 for m_n, _ in match_data if row[m_n] == reels[m_n])
@@ -145,29 +150,29 @@ with st.expander("🛠️ Administration"):
                             df_gen.loc[mask, 'Points'] = df_gen.loc[mask, 'Points'].astype(int) + pts
                         else:
                             df_gen = pd.concat([df_gen, pd.DataFrame([{"Joueur": j_nom, "Points": pts, "AncienRang": 0}])], ignore_index=True)
-                    save_disk(df_gen, SCORES_FILE)
+                    
+                    save_df(df_gen, SCORES_FILE)
                     if os.path.exists(VOTES_FILE): os.remove(VOTES_FILE)
                     st.success("Scores mis à jour !")
                     st.rerun()
 
         with t2:
             df_v = load_df(VOTES_FILE, ["Joueur"])
-            st.dataframe(df_v)
+            if not df_v.empty:
+                st.dataframe(df_v)
+                st.download_button("📥 Sauvegarder les votes avant validation", df_v.to_csv(index=False), "backup_votes.csv")
+            else: st.info("Aucun vote en attente.")
 
         with t3:
-            nouv_msg = st.text_area("Message :", current_msg)
-            if st.button("Sauver"):
-                with open(MSG_FILE, "w", encoding="utf-8") as f: f.write(nouv_msg)
+            nouv_msg = st.text_area("Nouveau message", current_msg)
+            if st.button("Mettre à jour"):
+                save_text(MSG_FILE, nouv_msg)
                 st.rerun()
 
         with t4:
             st.write(f"Statut : **{load_text(LOCK_FILE, 'unlocked')}**")
-            if st.button("Bloquer"):
-                with open(LOCK_FILE, "w") as f: f.write("locked")
-                st.rerun()
-            if st.button("Débloquer"):
-                with open(LOCK_FILE, "w") as f: f.write("unlocked")
-                st.rerun()
+            if st.button("Fermer les votes"): save_text(LOCK_FILE, "locked"); st.rerun()
+            if st.button("Ouvrir les votes"): save_text(LOCK_FILE, "unlocked"); st.rerun()
 
         with t5:
             if st.button("RÉINITIALISER LE CLASSEMENT"):
