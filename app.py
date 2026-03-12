@@ -108,6 +108,9 @@ if not df_scores.empty:
         return f"🟢 +{diff}" if diff > 0 else (f"🔴 {diff}" if diff < 0 else "〓")
     df_scores["Évo"] = df_scores.apply(get_evo, axis=1)
     st.table(df_scores[["Rang", "Évo", "Joueur", "Points"]].set_index("Rang"))
+    
+    # Bouton de sauvegarde du classement pour l'admin (visible uniquement si mdp saisi plus bas ou ici par sécurité)
+    st.download_button("💾 Sauvegarder le classement actuel (CSV)", df_scores.to_csv(index=False), "classement_general_backup.csv")
 else:
     st.info("Le classement sera affiché après la validation des résultats.")
 
@@ -115,7 +118,7 @@ try:
     st.image("image_c4423b.jpg.jpeg", use_container_width=True)
 except: pass
 
-# 5. ADMINISTRATION (ONGLET RESTAURATION AJOUTÉ)
+# 5. ADMINISTRATION
 st.markdown("<br><br>", unsafe_allow_html=True)
 with st.expander("🛠️ Administration"):
     mdp = st.text_input("Code", type="password")
@@ -145,12 +148,12 @@ with st.expander("🛠️ Administration"):
             df_v = load_df(VOTES_FILE, ["Joueur"])
             if not df_v.empty:
                 st.dataframe(df_v)
-                st.download_button("📥 TÉLÉCHARGER LA SAUVEGARDE", df_v.to_csv(index=False), "backup_votes.csv", help="À faire avant chaque validation !")
+                st.download_button("📥 Sauvegarder les votes avant validation", df_v.to_csv(index=False), "backup_votes.csv")
             else: st.info("Aucun vote.")
 
         with t3:
             nouv_msg = st.text_area("Nouveau message", current_msg)
-            if st.button("Sauver"): save_text(MSG_FILE, nouv_msg); st.rerun()
+            if st.button("Mettre à jour"): save_text(MSG_FILE, nouv_msg); st.rerun()
 
         with t4:
             st.write(f"Statut : **{load_text(LOCK_FILE, 'unlocked')}**")
@@ -159,22 +162,26 @@ with st.expander("🛠️ Administration"):
 
         with t5:
             st.markdown("### 🚑 Récupération des données")
-            st.write("Si le site a été réinitialisé, télécharge ton fichier de sauvegarde ici.")
+            st.info("Utilisez cette section uniquement si le site a été réinitialisé.")
             
             # Restauration Classement
-            file_score = st.file_uploader("Restaurer Classement (CSV)", type="csv", key="rest_score")
-            if file_score and st.button("Confirmer Restauration Classement"):
+            st.subheader("1. Restaurer le Classement Général")
+            file_score = st.file_uploader("Charger le fichier classement_general_backup.csv", type="csv")
+            if file_score and st.button("Confirmer la restauration du CLASSEMENT"):
                 df_rest = pd.read_csv(file_score)
                 save_df(df_rest, SCORES_FILE)
-                st.success("Classement restauré !")
+                st.success("🏆 Classement restauré avec succès !")
                 st.rerun()
 
+            st.divider()
+
             # Restauration Votes
-            file_votes = st.file_uploader("Restaurer Votes en cours (CSV)", type="csv", key="rest_votes")
-            if file_votes and st.button("Confirmer Restauration Votes"):
+            st.subheader("2. Restaurer les Votes de la journée")
+            file_votes = st.file_uploader("Charger le fichier backup_votes.csv", type="csv")
+            if file_votes and st.button("Confirmer la restauration des VOTES"):
                 df_rest_v = pd.read_csv(file_votes)
                 save_df(df_rest_v, VOTES_FILE)
-                st.success("Votes restaurés !")
+                st.success("🗳️ Votes restaurés avec succès !")
                 st.rerun()
 
         with t6:
