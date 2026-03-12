@@ -10,7 +10,6 @@ SCORES_FILE = "classement_general.csv"
 MSG_FILE = "message_admin.txt"
 LOCK_FILE = "lock_status.txt"
 
-# --- LISTE DES MATCHS (DÉFINIE GLOBALEMENT ICI) ---
 match_data = [
     ("Simple Homme 1", "👨"), ("Simple Homme 2", "👨"),
     ("Simple Dame 1", "👩"), ("Simple Dame 2", "👩"),
@@ -30,11 +29,21 @@ def save_to_disk(df, filename):
 def load_from_disk(filename, default_type="df"):
     if os.path.exists(filename):
         try:
-            if default_type == "df": return pd.read_csv(filename)
+            if default_type == "df": 
+                df = pd.read_csv(filename)
+                # SÉCURITÉ : Si le fichier est vide ou corrompu, on renvoie un DF propre
+                if df.empty or 'Joueur' not in df.columns:
+                    if filename == SCORES_FILE:
+                        return pd.DataFrame(columns=["Joueur", "Points", "AncienRang"])
+                    return pd.DataFrame()
+                return df
             else:
                 with open(filename, "r", encoding="utf-8") as f: return f.read().strip()
         except: return pd.DataFrame() if default_type == "df" else ""
-    return pd.DataFrame() if default_type == "df" else ""
+    # Si le fichier n'existe pas
+    if filename == SCORES_FILE:
+        return pd.DataFrame(columns=["Joueur", "Points", "AncienRang"])
+    return pd.DataFrame()
 
 # 2. DESIGN
 st.markdown("""
@@ -51,7 +60,6 @@ st.markdown("""
     </style>
     """, unsafe_allow_html=True)
 
-# --- INITIALISATION ---
 if not os.path.exists(LOCK_FILE):
     with open(LOCK_FILE, "w") as f: f.write("unlocked")
 
@@ -83,7 +91,7 @@ else:
             
         if st.button("🚀 VALIDER MA GRILLE"):
             df_v = load_from_disk(VOTES_FILE)
-            if not df_v.empty and nom_input.lower() in df_v["Joueur"].str.lower().values:
+            if not df_v.empty and 'Joueur' in df_v.columns and nom_input.lower() in df_v["Joueur"].str.lower().values:
                 st.warning(f"Désolé {nom_input}, ton vote est déjà enregistré !")
             else:
                 nouveau_vote = {"Joueur": nom_input}
@@ -100,7 +108,7 @@ st.divider()
 # 4. CLASSEMENT
 st.subheader("🏆 Classement Général")
 df_scores = load_from_disk(SCORES_FILE)
-if not df_scores.empty:
+if not df_scores.empty and 'Points' in df_scores.columns:
     df_scores = df_scores.sort_values(by="Points", ascending=False).reset_index(drop=True)
     df_scores["Rang"] = df_scores.index + 1
     if "AncienRang" not in df_scores.columns: df_scores["AncienRang"] = 0
@@ -125,20 +133,31 @@ with st.expander("🛠️ Administration"):
         t1, t2, t3, t4, t5 = st.tabs(["Résultats", "Votants", "Annonce", "Verrou", "RESET"])
         
         with t1:
-            # ICI match_data est maintenant bien reconnu car défini globalement
             reels = {m[0]: st.selectbox(f"{m[0]}", ["St-Nolff", "Adversaire"], key=f"adm_{m[0]}") for m in match_data}
             if st.button("Calculer la journée"):
                 df_v = load_from_disk(VOTES_FILE)
                 df_gen = load_from_disk(SCORES_FILE)
+                
+                # SÉCURITÉ : Recréer les colonnes si le fichier a été vidé manuellement
+                if 'Joueur' not in df_gen.columns:
+                    df_gen = pd.DataFrame(columns=["Joueur", "Points", "AncienRang"])
+
                 if not df_v.empty:
-                    if "AncienRang" not in df_gen.columns: df_gen["AncienRang"] = 0
+                    # Sauvegarde du rang actuel avant mise à jour
+                    df_gen["AncienRang"] = df_gen.index + 1
+                    
                     for _, row in df_v.iterrows():
                         j_nom = row['Joueur']
                         bons = sum(1 for m_name, _ in match_data if row[m_name] == reels[m_name])
                         pts = bons + (3 if bons == 8 else 0)
+                        
                         mask = df_gen['Joueur'].str.lower() == j_nom.lower()
-                        if mask.any(): df_gen.loc[mask, 'Points'] += pts
-                        else: df_gen = pd.concat([df_gen, pd.DataFrame([{"Joueur": j_nom, "Points": pts, "AncienRang": 0}])], ignore_index=True)
+                        if mask.any():
+                            df_gen.loc[mask, 'Points'] = df_gen.loc[mask, 'Points'].astype(int) + pts
+                        else:
+                            new_row = pd.DataFrame([{"Joueur": j_nom, "Points": pts, "AncienRang": 0}])
+                            df_gen = pd.concat([df_gen, new_row], ignore_index=True)
+                    
                     save_to_disk(df_gen, SCORES_FILE)
                     if os.path.exists(VOTES_FILE): os.remove(VOTES_FILE)
                     st.success("Scores mis à jour !")
@@ -149,7 +168,7 @@ with st.expander("🛠️ Administration"):
             if not df_v.empty:
                 st.write(f"Votants : {len(df_v)}")
                 st.dataframe(df_v)
-                st.download_button("Export CSV", df_v.to_csv(index=False), "votes.csv")
+            else: st.info("Aucun vote.")
 
         with t3:
             nouv_msg = st.text_area("Message :", current_msg)
