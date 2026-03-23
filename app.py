@@ -55,6 +55,7 @@ st.markdown("""
     .admin-msg { background-color: #f0f2f6 !important; padding: 18px; border-radius: 12px; text-align: center; font-weight: 700; border: 1px solid #d1d5db; margin: 15px 0; }
     .match-header { background-color: #f0f2f6 !important; padding: 10px 15px; font-weight: 700; color: black !important; border-radius: 8px; margin-top: 10px; }
     .stButton>button { background-color: #f0f2f6 !important; color: #31333F !important; border: 1px solid #d1d5db !important; border-radius: 12px; font-weight: bold; width: 100%; height: 3.5em; }
+    .score-badge { background-color: #f0f2f6; padding: 15px; border-radius: 10px; text-align: center; font-size: 1.5rem; font-weight: bold; border: 2px solid #d32f2f; margin: 10px 0; }
     </style>
     """, unsafe_allow_html=True)
 
@@ -63,10 +64,6 @@ st.markdown('<div class="header-box"><h1>Le MPP de l\'AOBD</h1><p>1pt/match • 
 
 current_msg = load_text(MSG_FILE, "Préparez vos pronos !")
 st.markdown(f'<div class="admin-msg">📢 {current_msg}</div>', unsafe_allow_html=True)
-
-try:
-    st.image("image_c4425f.jpg.jpeg", use_container_width=True)
-except: pass
 
 st.divider()
 
@@ -78,37 +75,44 @@ if is_locked:
 else:
     st.subheader("🎯 Fais tes pronos")
     nom_input = st.text_input("Ton Prénom & Nom", placeholder="Ex: Lucas B").strip()
+    
     if nom_input:
         pronos = {}
+        count_nolff = 0
+        count_adv = 0
+        
         for m_name, emoji in match_data:
             st.markdown(f'<div class="match-header">{emoji} {m_name}</div>', unsafe_allow_html=True)
-            pronos[m_name] = st.radio(f"Vainqueur {m_name}", ["St-Nolff 🐺", "Adversaire"], key=f"v_{m_name}", horizontal=True, label_visibility="collapsed")
+            choice = st.radio(f"Vainqueur {m_name}", ["St-Nolff 🐺", "Adversaire"], key=f"v_{m_name}", horizontal=True, label_visibility="collapsed")
+            pronos[m_name] = choice
+            
+            # Calcul automatique du score
+            if choice == "St-Nolff 🐺":
+                count_nolff += 1
+            else:
+                count_adv += 1
         
         st.markdown("<br>", unsafe_allow_html=True)
-        st.subheader("🔢 Ton prono du score final")
-        st.write("Le total doit être égal à 8 matchs.")
-        c1, c2 = st.columns(2)
-        score_nolff = c1.number_input("St-Nolff", 0, 8, 5)
-        score_adv = c2.number_input("Adversaire", 0, 8, 3)
+        st.subheader("🔢 Ton score final automatique")
+        st.markdown(f'<div class="score-badge">St-Nolff {count_nolff} - {count_adv} Adversaire</div>', unsafe_allow_html=True)
+        st.caption("Le score est calculé selon tes choix ci-dessus. Il rapporte +3pts s'il est correct !")
 
-        # VÉRIFICATION DU TOTAL DE 8
-        if score_nolff + score_adv != 8:
-            st.error(f"⚠️ Attention : Le score total est de {score_nolff + score_adv}. Il doit être de 8 !")
-        else:
-            if st.button("🚀 VALIDER MA GRILLE"):
-                df_v = load_df(VOTES_FILE, ["Joueur"])
-                if not df_v.empty and nom_input.lower() in df_v["Joueur"].str.lower().values:
-                    st.warning(f"Désolé {nom_input}, ton vote est déjà enregistré !")
-                else:
-                    nv = {
-                        "Joueur": nom_input,
-                        "ScoreFinalProno": f"{score_nolff}-{score_adv}"
-                    }
-                    for k, v in pronos.items(): nv[k] = "St-Nolff" if v == "St-Nolff 🐺" else v
-                    df_v = pd.concat([df_v, pd.DataFrame([nv])], ignore_index=True)
-                    save_df(df_v, VOTES_FILE)
-                    st.success(f"Vote enregistré (Score prono: {score_nolff}-{score_adv})")
-                    st.balloons()
+        if st.button("🚀 VALIDER MA GRILLE"):
+            df_v = load_df(VOTES_FILE, ["Joueur"])
+            if not df_v.empty and nom_input.lower() in df_v["Joueur"].str.lower().values:
+                st.warning(f"Désolé {nom_input}, ton vote est déjà enregistré !")
+            else:
+                nv = {
+                    "Joueur": nom_input,
+                    "ScoreFinalProno": f"{count_nolff}-{count_adv}"
+                }
+                for k, v in pronos.items(): 
+                    nv[k] = "St-Nolff" if v == "St-Nolff 🐺" else v
+                
+                df_v = pd.concat([df_v, pd.DataFrame([nv])], ignore_index=True)
+                save_df(df_v, VOTES_FILE)
+                st.success(f"Vote enregistré ! Score pronostiqué : {count_nolff}-{count_adv}")
+                st.balloons()
 
 st.divider()
 
@@ -125,13 +129,9 @@ if not df_scores.empty:
         return f"🟢 +{diff}" if diff > 0 else (f"🔴 {diff}" if diff < 0 else "〓")
     df_scores["Évo"] = df_scores.apply(get_evo, axis=1)
     st.table(df_scores[["Rang", "Évo", "Joueur", "Points"]].set_index("Rang"))
-    st.download_button("💾 Sauvegarder le classement (CSV)", df_scores.to_csv(index=False), "classement_general_backup.csv")
+    st.download_button("💾 Sauvegarder classement (CSV)", df_scores.to_csv(index=False), "classement_general_backup.csv")
 else:
     st.info("Le classement sera affiché après la validation des résultats.")
-
-try:
-    st.image("image_c4423b.jpg.jpeg", use_container_width=True)
-except: pass
 
 # 5. ADMINISTRATION
 st.markdown("<br><br>", unsafe_allow_html=True)
@@ -141,43 +141,47 @@ with st.expander("🛠️ Administration"):
         t1, t2, t3, t4, t5, t6 = st.tabs(["Résultats", "Votants", "Annonce", "Verrou", "📥 RESTAURATION", "RESET"])
         
         with t1:
-            st.subheader("1. Vainqueurs par match")
-            reels = {m[0]: st.selectbox(f"{m[0]}", ["St-Nolff", "Adversaire"], key=f"adm_{m[0]}") for m in match_data}
+            st.subheader("1. Résultats réels")
+            reels = {}
+            res_n = 0
+            res_a = 0
+            for m_name, _ in match_data:
+                choice_adm = st.selectbox(f"{m_name}", ["St-Nolff", "Adversaire"], key=f"adm_{m_name}")
+                reels[m_name] = choice_adm
+                if choice_adm == "St-Nolff": res_n += 1
+                else: res_a += 1
             
-            st.subheader("2. Score Final réel")
-            col1, col2 = st.columns(2)
-            res_n = col1.number_input("St-Nolff", 0, 8, 0, key="res_n")
-            res_a = col2.number_input("Adversaire", 0, 8, 0, key="res_a")
             score_final_reel = f"{res_n}-{res_a}"
+            st.markdown(f"**Score final calculé : {score_final_reel}**")
 
-            if res_n + res_a != 8:
-                st.warning(f"Total actuel : {res_n + res_a}. Le total doit être de 8 pour valider.")
-            else:
-                if st.button("Calculer et Valider la journée"):
-                    df_v = load_df(VOTES_FILE, ["Joueur"])
-                    df_gen = load_df(SCORES_FILE, ["Joueur", "Points", "AncienRang"])
-                    if not df_v.empty:
-                        df_gen["AncienRang"] = range(1, len(df_gen) + 1) if not df_gen.empty else 0
-                        for _, row in df_v.iterrows():
-                            j_nom = row['Joueur']
-                            bons = sum(1 for m_n, _ in match_data if row[m_n] == reels[m_n])
-                            pts_jour = bons
-                            if bons == 8: pts_jour += 3
-                            if str(row.get('ScoreFinalProno')) == score_final_reel:
-                                pts_jour += 3
-                            mask = df_gen['Joueur'].str.lower() == j_nom.lower()
-                            if mask.any(): df_gen.loc[mask, 'Points'] = df_gen.loc[mask, 'Points'].astype(int) + pts_jour
-                            else: df_gen = pd.concat([df_gen, pd.DataFrame([{"Joueur": j_nom, "Points": pts_jour, "AncienRang": 0}])], ignore_index=True)
-                        save_df(df_gen, SCORES_FILE)
-                        if os.path.exists(VOTES_FILE): os.remove(VOTES_FILE)
-                        st.success(f"Validé ! Score final : {score_final_reel}")
-                        st.rerun()
+            if st.button("Calculer et Valider la journée"):
+                df_v = load_df(VOTES_FILE, ["Joueur"])
+                df_gen = load_df(SCORES_FILE, ["Joueur", "Points", "AncienRang"])
+                if not df_v.empty:
+                    df_gen["AncienRang"] = range(1, len(df_gen) + 1) if not df_gen.empty else 0
+                    for _, row in df_v.iterrows():
+                        j_nom = row['Joueur']
+                        bons = sum(1 for m_n, _ in match_data if row[m_n] == reels[m_n])
+                        pts_jour = bons
+                        if bons == 8: pts_jour += 3
+                        # Bonus Score Exact
+                        if str(row.get('ScoreFinalProno')) == score_final_reel:
+                            pts_jour += 3
+                        
+                        mask = df_gen['Joueur'].str.lower() == j_nom.lower()
+                        if mask.any(): df_gen.loc[mask, 'Points'] = df_gen.loc[mask, 'Points'].astype(int) + pts_jour
+                        else: df_gen = pd.concat([df_gen, pd.DataFrame([{"Joueur": j_nom, "Points": pts_jour, "AncienRang": 0}])], ignore_index=True)
+                    
+                    save_df(df_gen, SCORES_FILE)
+                    if os.path.exists(VOTES_FILE): os.remove(VOTES_FILE)
+                    st.success(f"Validé ! Score : {score_final_reel}")
+                    st.rerun()
 
         with t2:
             df_v = load_df(VOTES_FILE, ["Joueur"])
             if not df_v.empty:
                 st.dataframe(df_v)
-                st.download_button("📥 Sauvegarde VOTES", df_v.to_csv(index=False), "backup_votes.csv")
+                st.download_button("📥 Télécharger sauvegarde VOTES", df_v.to_csv(index=False), "backup_votes.csv")
             else: st.info("Aucun vote.")
 
         with t3:
