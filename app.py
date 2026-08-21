@@ -108,8 +108,8 @@ st.markdown("""
 # CHARGEMENT DE LA CONFIGURATION
 current_j, lock_status, msg_admin = get_config()
 
-# BANNIÈRE D'EN-TÊTE ET MESSAGE D'ANNONCE
-st.markdown(f'<div class="header-box"><h1>Le MPP de l\'AOBD</h1><p>Journée Actuelle : {current_j} • Cotes sur 100pts • +100pts si 8/8 • +100pts si Score Exact</p></div>', unsafe_allow_html=True)
+# BANNIÈRE D'EN-TÊTE ET MESSAGE D'ANNONCE (Sans la mention J1)
+st.markdown('<div class="header-box"><h1>Le MPP de l\'AOBD</h1><p>Cotes sur 100pts • +100pts si 8/8 • +100pts si Score Exact</p></div>', unsafe_allow_html=True)
 if msg_admin:
     st.markdown(f'<div class="admin-msg">📢 {msg_admin}</div>', unsafe_allow_html=True)
 
@@ -122,13 +122,13 @@ tab_prono, tab_class, tab_stats, tab_admin = st.tabs([
 ])
 
 # ---------------------------------------------------------
-# 1. PRONOSTIQUER (JOURNÉE ACTUELLE AUTOMATIQUE)
+# 1. PRONOSTIQUER (REVIENT À ZÉRO À CHAQUE NOUVELLE JOURNÉE)
 # ---------------------------------------------------------
 with tab_prono:
     if lock_status == "locked":
-        st.warning(f"🔒 Les votes sont clos pour la journée **{current_j}**.")
+        st.warning("🔒 Les votes sont actuellement clos pour la rencontre en cours.")
     else:
-        st.subheader(f"🎯 Pronostics {current_j}")
+        st.subheader("🎯 Pronostics de la rencontre")
         cotes_actuelles = get_cotes(current_j)
         
         with st.form("form_pronostics"):
@@ -149,7 +149,7 @@ with tab_prono:
                 else:
                     df_v = load_sheet("votes", ["Journee", "Joueur"] + MATCH_NAMES + ["ScoreFinalProno"])
                     if not df_v.empty and ((df_v["Journee"].astype(str) == str(current_j)) & (df_v["Joueur"].astype(str).str.lower() == nom_input.lower())).any():
-                        st.warning(f"Ton vote pour la {current_j} est déjà enregistré !")
+                        st.warning("Ton vote pour cette rencontre est déjà enregistré !")
                     else:
                         nolff = sum(1 for v in pronos.values() if "St-Nolff" in v)
                         score_p = f"{nolff}-{len(MATCH_NAMES) - nolff}"
@@ -227,15 +227,15 @@ with tab_admin:
     st.subheader("🛠️ Administration")
     if st.text_input("Code Administrateur", type="password") == st.secrets.get("ADMIN_PASSWORD", "2003"):
         t1, t_votes, t_cotes, t_annonce = st.tabs([
-            "Valider Journée", 
+            "Valider la Rencontre", 
             "👁️ Voir les Votes", 
             "Définir Cotes", 
             "📢 Message d'Annonce"
         ])
         
-        # TAB 1 : VALIDER LA JOURNÉE EN COURS
+        # TAB 1 : VALIDER LA RENCONTRE EN COURS
         with t1:
-            st.write(f"Saisir les résultats réels de **{current_j}** :")
+            st.write("Saisir les résultats réels de la rencontre :")
             reels, res_n, res_a = {}, 0, 0
             for m in MATCH_NAMES:
                 choice = st.selectbox(m, ["St-Nolff", "Adversaire"], key=f"adm_{m}")
@@ -246,7 +246,7 @@ with tab_admin:
             score_reel = f"{res_n}-{res_a}"
             st.info(f"Score calculé : {score_reel}")
             
-            if st.button(f"Calculer, Enregistrer & Passer à la journée suivante"):
+            if st.button("Calculer, Enregistrer & Réinitialiser pour la prochaine journée"):
                 df_v = load_sheet("votes", ["Journee", "Joueur"] + MATCH_NAMES + ["ScoreFinalProno"])
                 df_gen = load_sheet("classement", ["Joueur", "Points", "AncienRang"])
                 df_res = load_sheet("resultats", ["Journee"] + MATCH_NAMES + ["ScoreFinalReel"])
@@ -285,7 +285,7 @@ with tab_admin:
                     save_sheet("classement", df_gen)
                     save_sheet("resultats", df_res)
                     
-                    # Passage automatique à la journée suivante (ex: J1 -> J2)
+                    # Passage à la journée suivante (incrémentation interne invisible)
                     match = re.search(r'\d+', current_j)
                     if match:
                         num_j = int(match.group())
@@ -293,28 +293,36 @@ with tab_admin:
                     else:
                         next_j = current_j
                     
+                    # Réinitialisation des cotes par défaut (50/50) pour la nouvelle journée
+                    df_c = load_sheet("cotes", ["Journee", "Match", "CoteNolff", "CoteAdv"])
+                    nouvelles_cotes_defaut = [{"Journee": next_j, "Match": m, "CoteNolff": 50, "CoteAdv": 50} for m in MATCH_NAMES]
+                    df_c = pd.concat([df_c, pd.DataFrame(nouvelles_cotes_defaut)], ignore_index=True)
+                    save_sheet("cotes", df_c)
+                    
+                    # Mise à jour config (déverrouille les votes pour la nouvelle grille)
                     save_config(next_j, "unlocked", msg_admin)
-                    st.success(f"Résultats de la {current_j} enregistrés ! Passage automatique à la {next_j}.")
+                    
+                    st.success("Résultats validés ! Les cotes ont été réinitialisées à 50/50 et la nouvelle grille de votes est prête.")
                     st.rerun()
 
-        # TAB 2 : CONSULTER QUI A VOTÉ QUOI
+        # TAB 2 : CONSULTER QUI A VOTÉ QUOI POUR LA RENCONTRE EN COURS
         with t_votes:
-            st.subheader(f"📋 Pronostics enregistrés pour {current_j}")
+            st.subheader("📋 Pronostics enregistrés pour la rencontre en cours")
             df_v = load_sheet("votes", ["Journee", "Joueur"] + MATCH_NAMES + ["ScoreFinalProno"])
             
             if df_v.empty:
                 st.info("Aucun pronostic n'a encore été enregistré.")
             else:
                 df_filtered = df_v[df_v["Journee"].astype(str) == str(current_j)]
-                st.write(f"**Total votes enregistrés pour {current_j} :** {len(df_filtered)}")
+                st.write(f"**Total votes enregistrés :** {len(df_filtered)}")
                 if not df_filtered.empty:
                     st.dataframe(df_filtered.set_index("Joueur"))
                 else:
-                    st.info(f"Aucun vote enregistré pour {current_j}.")
+                    st.info("Aucun vote enregistré pour cette rencontre.")
 
-        # TAB 3 : DÉFINIR COTES POUR LA JOURNÉE EN COURS
+        # TAB 3 : DÉFINIR COTES POUR LA PROCHAINE RENCONTRE
         with t_cotes:
-            st.subheader(f"Définir les cotes pour {current_j}")
+            st.subheader("Définir les cotes de la rencontre")
             st.caption("Ajuste les chances de victoire de St-Nolff sur 100 points.")
             
             df_c = load_sheet("cotes", ["Journee", "Match", "CoteNolff", "CoteAdv"])
