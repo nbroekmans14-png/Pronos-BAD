@@ -140,17 +140,13 @@ tab_prono, tab_class, tab_stats, tab_admin = st.tabs([
 with tab_prono:
     st.subheader("🎯 Pronostics")
     
-    # Menu déroulant pour consulter/pronostiquer une journée (Défaut : Journée ouverte par l'admin)
+    # Menu déroulant pour choisir la journée à pronostiquer (Défaut : Journée en cours)
     idx_defaut = JOURNEES_LISTE.index(current_j) if current_j in JOURNEES_LISTE else 0
-    j_prono = st.selectbox("Sélectionne la journée à consulter ou parier :", JOURNEES_LISTE, index=idx_defaut, key="select_j_prono")
+    j_prono = st.selectbox("Sélectionne la journée que tu souhaites pronostiquer :", JOURNEES_LISTE, index=idx_defaut, key="select_j_prono")
     
-    # Vérification strict des permissions de vote
-    if j_prono != current_j:
-        st.warning(f"🔒 Seule la **{current_j}** est actuellement ouverte aux votes. Tu peux consulter les cotes de la {j_prono}, mais tu ne peux pas parier dessus.")
-    elif lock_status == "locked":
+    if lock_status == "locked" and j_prono == current_j:
         st.warning(f"🔒 Les votes sont actuellement clos pour la {j_prono}.")
     else:
-        st.success(f"🟢 Les votes sont ouverts pour la **{j_prono}** !")
         cotes_actuelles = get_cotes(j_prono)
         
         with st.form(key=f"form_pronostics_{j_prono}"):
@@ -268,16 +264,14 @@ with tab_admin:
     st.subheader("🛠️ Administration")
     if st.text_input("Code Administrateur", type="password") == st.secrets.get("ADMIN_PASSWORD", "2003"):
         
-        st.markdown("### 🔓 Journée Ouverte aux Joueurs")
-        st.info(f"Seule **une seule journée** est accessible aux votes à la fois. Actuellement : **{current_j}**")
-        
+        st.markdown("### 📅 Journée Active")
         idx_actuel = JOURNEES_LISTE.index(current_j) if current_j in JOURNEES_LISTE else 0
-        j_selectionnee = st.selectbox("Choisir la journée unique à OUVRIR aux votes :", JOURNEES_LISTE, index=idx_actuel)
+        j_selectionnee = st.selectbox("Sélectionne la journée active :", JOURNEES_LISTE, index=idx_actuel)
         
         if j_selectionnee != current_j:
-            if st.button(f"📌 Ouvrir uniquement la {j_selectionnee} aux votes"):
-                save_config(j_selectionnee, "unlocked", f"Les votes sont ouverts pour la {j_selectionnee} !")
-                st.success(f"Succès ! Seule la {j_selectionnee} est désormais ouverte aux votes.")
+            if st.button(f"📌 Activer immédiatement la {j_selectionnee}"):
+                save_config(j_selectionnee, "unlocked", msg_admin)
+                st.success(f"Application passée sur la {j_selectionnee} !")
                 st.rerun()
 
         st.divider()
@@ -348,7 +342,7 @@ with tab_admin:
                 df_res = pd.concat([df_res[df_res["Journee"].astype(str) != str(j_selectionnee)], pd.DataFrame([res_row])], ignore_index=True)
                 save_sheet("resultats", df_res)
 
-                # INCRÉMENTATION AUTOMATIQUE VERS LA JOURNÉE SUIVANTE
+                # INCRÉMENTATION DE LA JOURNÉE
                 idx_act = JOURNEES_LISTE.index(j_selectionnee) if j_selectionnee in JOURNEES_LISTE else 0
                 idx_suiv = idx_act + 1
                 next_j = JOURNEES_LISTE[idx_suiv] if idx_suiv < len(JOURNEES_LISTE) else j_selectionnee
@@ -360,10 +354,10 @@ with tab_admin:
                     df_c = pd.concat([df_c, pd.DataFrame(nouvelles_cotes_defaut)], ignore_index=True)
                     save_sheet("cotes", df_c)
 
-                # SAUVEGARDE ET OUVERTURE UNIQUE DE LA JOURNÉE SUIVANTE
+                # SAUVEGARDE ET DEBLOCAGE DE LA JOURNEE SUIVANTE
                 save_config(next_j, "unlocked", f"Les votes sont ouverts pour la {next_j} !")
 
-                st.success(f"✅ Journée {j_selectionnee} validée ! L'application est maintenant ouverte **uniquement pour la {next_j}**.")
+                st.success(f"✅ Journée {j_selectionnee} validée ! L'application est maintenant configurée sur la {next_j} avec votes ouverts.")
                 st.rerun()
 
         # TAB 2 : CONSULTER LES VOTES
@@ -411,8 +405,8 @@ with tab_admin:
             st.subheader("📢 Message d'Annonce Général")
             msg = st.text_area("Rédiger / Modifier l'annonce :", msg_admin)
             
-            st.subheader("🔒 Verrouillage Global des Votes")
-            lock = st.radio("Autoriser les votes sur la journée ouverte ?", ["unlocked", "locked"], index=0 if lock_status == "unlocked" else 1)
+            st.subheader("🔒 Statut des Votes")
+            lock = st.radio("Autoriser les votes ?", ["unlocked", "locked"], index=0 if lock_status == "unlocked" else 1)
             
             if st.button("Sauvegarder l'Annonce et le Statut"): 
                 current_j_fresh, _, _ = get_config()
