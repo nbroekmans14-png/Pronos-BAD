@@ -2,9 +2,10 @@ import streamlit as st
 import pandas as pd
 import gspread
 import json
+import re
 from google.oauth2.service_account import Credentials
 
-# CONFIGURATION
+# CONFIGURATION DE LA PAGE
 st.set_page_config(page_title="MPP AOBD", page_icon="🏸", layout="centered")
 
 MATCH_NAMES = ["Simple Homme 1", "Simple Homme 2", "Simple Dame 1", "Simple Dame 2", 
@@ -25,6 +26,8 @@ def get_gspread_client():
     gc = gspread.authorize(credentials)
     return gc.open_by_url(st.secrets["SPREADSHEET_URL"])
 
+# CACHE POUR ÉVITER LE DÉPASSEMENT DE QUOTA API (429)
+@st.cache_data(ttl=60)
 def load_sheet(sheet_name, columns):
     try:
         sh = get_gspread_client()
@@ -43,6 +46,7 @@ def save_sheet(sheet_name, df):
         worksheet = sh.worksheet(sheet_name)
         worksheet.clear()
         worksheet.update([df.columns.values.tolist()] + df.astype(str).values.tolist())
+        st.cache_data.clear()  # Vider le cache après une sauvegarde
     except Exception as e:
         st.error(f"Erreur de sauvegarde dans Google Sheets ({sheet_name}) : {e}")
 
@@ -96,7 +100,7 @@ current_j, lock_status, msg_admin = get_config()
 st.markdown(f'<div class="header-box"><h1>Le MPP de l\'AOBD</h1><p>Journée Actuelle : {current_j} • Cotes sur 100pts • +100pts si 8/8 • +100pts si Score Exact</p></div>', unsafe_allow_html=True)
 st.markdown(f'<div class="admin-msg">📢 {msg_admin}</div>', unsafe_allow_html=True)
 
-# ONGLETS
+# ONGLETS PRINCIPAUX
 tab_prono, tab_class, tab_stats, tab_admin = st.tabs([
     "🎯 Pronostiquer", 
     "🏆 Classement", 
@@ -104,7 +108,9 @@ tab_prono, tab_class, tab_stats, tab_admin = st.tabs([
     "🛠️ Administration"
 ])
 
+# ---------------------------------------------------------
 # 1. PRONOSTIQUER
+# ---------------------------------------------------------
 with tab_prono:
     if lock_status == "locked":
         st.warning(f"🔒 Les votes sont clos pour la journée **{current_j}**.")
@@ -143,7 +149,9 @@ with tab_prono:
                         st.success(f"Vote enregistré ! Score pronostiqué : {score_p}")
                         st.balloons()
 
+# ---------------------------------------------------------
 # 2. CLASSEMENT
+# ---------------------------------------------------------
 with tab_class:
     st.subheader("🏆 Classement Général")
     df_scores = load_sheet("classement", ["Joueur", "Points", "AncienRang"])
@@ -162,14 +170,16 @@ with tab_class:
     else:
         st.info("Aucun résultat validé pour le moment.")
 
+# ---------------------------------------------------------
 # 3. STATISTIQUES SAISON
+# ---------------------------------------------------------
 with tab_stats:
     st.subheader("📊 Statistiques de la Saison")
     df_v = load_sheet("votes", ["Journee", "Joueur"] + MATCH_NAMES + ["ScoreFinalProno"])
     df_res = load_sheet("resultats", ["Journee"] + MATCH_NAMES + ["ScoreFinalReel"])
     
     if df_res.empty or df_v.empty:
-        st.info("Statistiques disponibles après la validation d'une 1re journée.")
+        st.info("Les statistiques apparaîtront dès la première journée validée.")
     else:
         j_validees = df_res["Journee"].astype(str).unique().tolist()
         df_v_valid = df_v[df_v["Journee"].astype(str).isin(j_validees)]
@@ -198,7 +208,7 @@ with tab_stats:
         st.table(pd.DataFrame(stats_m).set_index("Match"))
         
         st.divider()
-        st.markdown("### 👤 Détail des points par participant")
+        st.markdown("### 👤 Détail des points par participant (Journées validées)")
         
         participants = []
         for joueur, group in df_v_valid.groupby("Joueur"):
@@ -235,12 +245,20 @@ with tab_stats:
         df_part = pd.DataFrame(participants).sort_values(by="Total Points", ascending=False).reset_index(drop=True)
         st.table(df_part.set_index("Joueur"))
 
+# ---------------------------------------------------------
 # 4. ADMINISTRATION
+# ---------------------------------------------------------
 with tab_admin:
     st.subheader("🛠️ Administration")
     if st.text_input("Code Administrateur", type="password") == st.secrets.get("ADMIN_PASSWORD", "2003"):
-        t1, t_cotes, t2 = st.tabs(["Valider Journée", "Définir Cotes", "Annonce & Config"])
+        t1, t_votes, t_cotes, t2 = st.tabs([
+            "Valider Journée", 
+            "👁️ Voir les Votes", 
+            "Définir Cotes", 
+            "Annonce & Config"
+        ])
         
+        # ONGLET : VALIDER JOURNÉE
         with t1:
             st.write(f"Résultats réels pour **{current_j}** :")
             reels, res_n, res_a = {}, 0, 0
@@ -253,7 +271,7 @@ with tab_admin:
             score_reel = f"{res_n}-{res_a}"
             st.info(f"Score calculé : {score_reel}")
             
-            if st.button("Calculer & Enregistrer les résultats"):
+            if st.button("Calculer, Enregistrer & Passer à la journée suivante"):
                 df_v = load_sheet("votes", ["Journee", "Joueur"] + MATCH_NAMES + ["ScoreFinalProno"])
                 df_gen = load_sheet("classement", ["Joueur", "Points", "AncienRang"])
                 df_res = load_sheet("resultats", ["Journee"] + MATCH_NAMES + ["ScoreFinalReel"])
@@ -290,9 +308,36 @@ with tab_admin:
                     
                     save_sheet("classement", df_gen)
                     save_sheet("resultats", df_res)
-                    st.success("Résultats et classement sauvegardés !")
+                    
+                    # PASSER AUTOMATIQUEMENT À LA JOURNÉE SUIVANTE (ex: J1 -> J2)
+                    match = re.search(r'\d+', current_j)
+                    if match:
+                        num_j = int(match.group())
+                        next_j = f"J{num_j + 1}"
+                    else:
+                        next_j = current_j
+                    
+                    save_config(next_j, "unlocked", msg_admin)
+                    st.success(f"Résultats de la {current_j} validés ! Passage automatique à la {next_j}.")
                     st.rerun()
 
+        # ONGLET : VOIR LES VOTES (RESERVÉ ADMIN)
+        with t_votes:
+            st.subheader("📋 Consultations des pronostics enregistrés")
+            df_v = load_sheet("votes", ["Journee", "Joueur"] + MATCH_NAMES + ["ScoreFinalProno"])
+            
+            if df_v.empty:
+                st.info("Aucun pronostic n'a encore été enregistré.")
+            else:
+                liste_j = df_v["Journee"].astype(str).unique().tolist()
+                j_choisie = st.selectbox("Choisir la journée :", liste_j, index=len(liste_j)-1)
+                
+                df_filtered = df_v[df_v["Journee"].astype(str) == str(j_choisie)]
+                st.write(f"**Total votes enregistrés pour {j_choisie} :** {len(df_filtered)}")
+                
+                st.dataframe(df_filtered.set_index("Joueur"))
+
+        # ONGLET : DÉFINIR COTES
         with t_cotes:
             st.subheader(f"Définir les cotes pour {current_j}")
             st.caption("Ajuste les chances de victoire de St-Nolff sur 100 points.")
@@ -316,6 +361,7 @@ with tab_admin:
                 st.success("Cotes enregistrées !")
                 st.rerun()
 
+        # ONGLET : ANNONCE & CONFIG
         with t2:
             msg = st.text_area("Message d'annonce", msg_admin)
             if st.button("Sauvegarder Message"): 
@@ -325,9 +371,9 @@ with tab_admin:
             
             st.divider()
             c1, c2 = st.columns(2)
-            nj = c1.text_input("Journée (ex: J1, J2, J3...)", current_j)
-            nl = c2.radio("Votes", ["unlocked", "locked"], index=0 if lock_status == "unlocked" else 1)
-            if st.button("Sauvegarder Configuration Journée"): 
+            nj = c1.text_input("Journée active", current_j)
+            nl = c2.radio("Statut des votes", ["unlocked", "locked"], index=0 if lock_status == "unlocked" else 1)
+            if st.button("Sauvegarder Manuel Configuration"): 
                 save_config(nj, nl, msg_admin)
-                st.success("Journée et verrouillage sauvegardés !")
+                st.success("Configuration sauvegardée !")
                 st.rerun()
