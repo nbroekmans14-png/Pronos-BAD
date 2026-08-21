@@ -65,7 +65,6 @@ st.markdown("""
     .header-box p { color: #ffeb3b !important; margin-top: 5px; font-weight: bold; }
     .admin-msg { background-color: #f0f2f6 !important; padding: 15px; border-radius: 12px; text-align: center; font-weight: 700; border: 1px solid #d1d5db; margin: 15px 0; }
     .match-header { background-color: #f0f2f6 !important; padding: 8px 12px; font-weight: 700; color: black !important; border-radius: 8px; margin-top: 10px; }
-    .score-badge { background-color: #f0f2f6; padding: 12px; border-radius: 10px; text-align: center; font-size: 1.3rem; font-weight: bold; border: 2px solid #d32f2f; margin: 10px 0; }
     .card-piege { background-color: #fff3cd; border: 2px dashed #ffebaa; border-radius: 12px; padding: 15px; text-align: center; color: #856404; font-weight: bold; margin: 15px 0; }
     </style>
     """, unsafe_allow_html=True)
@@ -77,12 +76,12 @@ st.markdown(f'<div class="header-box"><h1>Le MPP de l\'AOBD</h1><p>Journée Actu
 current_msg = load_text(MSG_FILE, "Préparez vos pronos !")
 st.markdown(f'<div class="admin-msg">📢 {current_msg}</div>', unsafe_allow_html=True)
 
-# 3. NAVIGATION PAR ONGLETS
-tab_prono, tab_class, tab_prog, tab_renc, tab_admin = st.tabs([
+# 3. NAVIGATION PAR ONGLETS (3 onglets utilisateurs + admin)
+tab_prono, tab_class, tab_renc, tab_stats, tab_admin = st.tabs([
     "🎯 Pronostiquer", 
     "🏆 Classement", 
-    "📊 Ma progression", 
     "📅 Rencontres", 
+    "📊 Statistiques Saison",
     "🛠️ Administration"
 ])
 
@@ -121,7 +120,6 @@ with tab_prono:
                 else:
                     df_v = load_df(HISTORIQUE_VOTES_FILE, ["Journee", "Joueur"] + MATCH_NAMES + ["ScoreFinalProno"])
                     
-                    # Vérifier si déjà voté pour cette journée
                     deja_vote = False
                     if not df_v.empty:
                         mask = (df_v["Journee"].astype(str) == str(current_j)) & (df_v["Joueur"].str.lower() == nom_input.lower())
@@ -169,93 +167,14 @@ with tab_class:
         st.info("Le classement sera affiché après la validation des premiers résultats.")
 
 # ---------------------------------------------------------
-# TAB 3 : MA PROGRESSION
-# ---------------------------------------------------------
-with tab_prog:
-    st.subheader("📊 Ma progression")
-    df_scores = load_df(SCORES_FILE, ["Joueur", "Points", "AncienRang"])
-    df_votes = load_df(HISTORIQUE_VOTES_FILE, ["Journee", "Joueur"] + MATCH_NAMES + ["ScoreFinalProno"])
-    df_res = load_df(RESULTATS_FILE, ["Journee"] + MATCH_NAMES + ["ScoreFinalReel"])
-    
-    joueurs_dispos = df_scores["Joueur"].unique().tolist() if not df_scores.empty else []
-    if not joueurs_dispos and not df_votes.empty:
-        joueurs_dispos = df_votes["Joueur"].unique().tolist()
-        
-    if joueurs_dispos:
-        joueur_sel = st.selectbox("Sélectionne ton profil", sorted(joueurs_dispos))
-        
-        # Résumé Profil
-        pts = 0
-        rang_str = "N/A"
-        evo_str = "〓"
-        if not df_scores.empty:
-            df_scores_sorted = df_scores.sort_values(by="Points", ascending=False).reset_index(drop=True)
-            df_scores_sorted["Rang"] = df_scores_sorted.index + 1
-            user_row = df_scores_sorted[df_scores_sorted["Joueur"].str.lower() == joueur_sel.lower()]
-            if not user_row.empty:
-                pts = int(user_row.iloc[0]["Points"])
-                r = int(user_row.iloc[0]["Rang"])
-                rang_str = f"{r}e" if r > 1 else "1er 🥇"
-                anc_r = int(user_row.iloc[0]["AncienRang"])
-                if anc_r > 0:
-                    diff = anc_r - r
-                    evo_str = f"+{diff}" if diff > 0 else f"{diff}"
-        
-        c1, c2, c3 = st.columns(3)
-        c1.metric("🏆 Classement", rang_str)
-        c2.metric("⭐ Total Points", f"{pts} pts")
-        c3.metric("📈 Évolution", evo_str)
-        
-        st.divider()
-        st.markdown("### 📜 Détails par journée")
-        
-        # Analyse des performances par journée
-        if not df_votes.empty and not df_res.empty:
-            user_votes = df_votes[df_votes["Joueur"].str.lower() == joueur_sel.lower()]
-            
-            perf_data = []
-            for _, row_v in user_votes.iterrows():
-                j = str(row_v["Journee"])
-                res_j = df_res[df_res["Journee"].astype(str) == j]
-                
-                if not res_j.empty:
-                    row_r = res_j.iloc[0]
-                    bons = sum(1 for m in MATCH_NAMES if row_v[m] == row_r[m])
-                    bonus_8 = 3 if bons == 8 else 0
-                    bonus_exact = 3 if str(row_v.get("ScoreFinalProno")) == str(row_r.get("ScoreFinalReel")) else 0
-                    total_j = bons + bonus_8 + bonus_exact
-                    
-                    # Barre visuelle de réussite
-                    barre = "█" * bons + "░" * (8 - bons)
-                    
-                    perf_data.append({
-                        "Journée": j,
-                        "Pronos Corrects": f"{barre} ({bons}/8)",
-                        "Points Matchs": bons,
-                        "Bonus 8/8": f"+{bonus_8}" if bonus_8 else "0",
-                        "Bonus Score Exact": f"+{bonus_exact}" if bonus_exact else "0",
-                        "Total Journée": f"+{total_j}"
-                    })
-            
-            if perf_data:
-                st.table(pd.DataFrame(perf_data).set_index("Journée"))
-            else:
-                st.info("Aucun résultat validé pour tes pronostics passés.")
-        else:
-            st.info("Historique de progression indisponible pour le moment.")
-    else:
-        st.info("Aucun joueur n'est enregistré pour l'instant.")
-
-# ---------------------------------------------------------
-# TAB 4 : RENCONTRES & TENDANCES
+# TAB 3 : RENCONTRES
 # ---------------------------------------------------------
 with tab_renc:
-    st.subheader("📅 Rencontres & Tendances")
+    st.subheader("📅 Rencontres & Tendances par Journée")
     
     df_votes = load_df(HISTORIQUE_VOTES_FILE, ["Journee", "Joueur"] + MATCH_NAMES + ["ScoreFinalProno"])
     df_res = load_df(RESULTATS_FILE, ["Journee"] + MATCH_NAMES + ["ScoreFinalReel"])
     
-    # Sélection de la journée à consulter
     journees_dispos = [current_j]
     if not df_votes.empty:
         journees_dispos = sorted(list(set(df_votes["Journee"].astype(str).tolist() + [current_j])))
@@ -265,7 +184,6 @@ with tab_renc:
     votes_j = df_votes[df_votes["Journee"].astype(str) == str(j_visu)] if not df_votes.empty else pd.DataFrame()
     res_j = df_res[df_res["Journee"].astype(str) == str(j_visu)] if not df_res.empty else pd.DataFrame()
     
-    # Regarder si les votes de cette journée sont clos
     is_j_locked = (lock_status == "locked") if j_visu == current_j else True
     
     if votes_j.empty:
@@ -274,11 +192,10 @@ with tab_renc:
         st.warning(f"🔒 Les pronostics des autres joueurs pour la {j_visu} sont masqués jusqu'à la fermeture des votes.")
         st.metric("Nombre de votants actuels", len(votes_j))
     else:
-        st.success(f"👀 Tendances des pronostics ({len(votes_j)} votants)")
+        st.success(f"👀 Tendances de la {j_visu} ({len(votes_j)} votants)")
         
         total_votes = len(votes_j)
         stats = []
-        
         piege_match = None
         piege_pct = 100.0
         
@@ -293,18 +210,13 @@ with tab_renc:
                 "Adversaire 🏸": f"{pct_adv} %"
             }
             
-            # Si le résultat réel est validé, ajouter le taux de réussite
             if not res_j.empty:
                 vrai_gagnant = res_j.iloc[0][m_name]
-                if vrai_gagnant == "St-Nolff":
-                    reussite = pct_nolff
-                else:
-                    reussite = pct_adv
+                reussite = pct_nolff if vrai_gagnant == "St-Nolff" else pct_adv
                 
                 row_stat["Vainqueur Réel"] = vrai_gagnant
                 row_stat["Taux Réussite"] = f"{reussite} %"
                 
-                # Vérification match piège (le gagnant réel qui avait le plus bas % de prono)
                 if reussite < piege_pct:
                     piege_pct = reussite
                     piege_match = (m_name, vrai_gagnant, reussite)
@@ -313,7 +225,6 @@ with tab_renc:
         
         st.table(pd.DataFrame(stats).set_index("Match"))
         
-        # Affichage Match Piège si résultats dispo
         if piege_match and piege_pct < 50:
             st.markdown(f'''
             <div class="card-piege">
@@ -321,6 +232,77 @@ with tab_renc:
                 Seulement {piege_pct}% des pronostiqueurs avaient prévu la victoire de {piege_match[1]} !
             </div>
             ''', unsafe_allow_html=True)
+
+# ---------------------------------------------------------
+# TAB 4 : STATISTIQUES SAISON (GÉNÉRALES)
+# ---------------------------------------------------------
+with tab_stats:
+    st.subheader("📊 Statistiques de la Saison")
+    
+    df_votes = load_df(HISTORIQUE_VOTES_FILE, ["Journee", "Joueur"] + MATCH_NAMES + ["ScoreFinalProno"])
+    df_res = load_df(RESULTATS_FILE, ["Journee"] + MATCH_NAMES + ["ScoreFinalReel"])
+    
+    if df_res.empty or df_votes.empty:
+        st.info("Les statistiques de la saison seront disponibles dès qu'une première journée sera jouée et validée.")
+    else:
+        # Ne prendre en compte que les journées terminées/validées
+        journees_validees = df_res["Journee"].astype(str).unique().tolist()
+        df_v_validees = df_votes[df_votes["Journee"].astype(str).isin(journees_validees)]
+        
+        nb_j = len(journees_validees)
+        tot_pronos = len(df_v_validees)
+        
+        c1, c2 = st.columns(2)
+        c1.metric("Journées jouées", nb_j)
+        c2.metric("Grilles validées au total", tot_pronos)
+        
+        st.divider()
+        st.markdown("### 🎯 Taux de réussite global du club par type de match")
+        
+        stats_saison = []
+        tot_bons_global = 0
+        tot_pronos_matchs_global = 0
+        
+        for m_name in MATCH_NAMES:
+            bons_match = 0
+            total_match = 0
+            
+            for j in journees_validees:
+                res_j = df_res[df_res["Journee"].astype(str) == j]
+                votes_j = df_v_validees[df_v_validees["Journee"].astype(str) == j]
+                
+                if not res_j.empty and not votes_j.empty:
+                    vrai_gagnant = res_j.iloc[0][m_name]
+                    bons = sum(1 for v in votes_j[m_name] if v == vrai_gagnant)
+                    cnt = len(votes_j)
+                    
+                    bons_match += bons
+                    total_match += cnt
+            
+            pct_saison = round((bons_match / total_match) * 100) if total_match > 0 else 0
+            tot_bons_global += bons_match
+            tot_pronos_matchs_global += total_match
+            
+            stats_saison.append({
+                "Discipline": m_name,
+                "Pronos Corrects": f"{bons_match} / {total_match}",
+                "Taux de réussite": pct_saison
+            })
+        
+        df_saison_stats = pd.DataFrame(stats_saison).sort_values(by="Taux de réussite", ascending=False).reset_index(drop=True)
+        
+        # Mettre en avant le match le plus prévisible et le plus difficile
+        if not df_saison_stats.empty:
+            top_m = df_saison_stats.iloc[0]
+            flop_m = df_saison_stats.iloc[-1]
+            
+            c_top, c_flop = st.columns(2)
+            c_top.success(f"🟢 **Le + facile :** {top_m['Discipline']} ({top_m['Taux de réussite']}%)")
+            c_flop.error(f"🔴 **Le + imprévisible :** {flop_m['Discipline']} ({flop_m['Taux de réussite']}%)")
+        
+        # Formater pour l'affichage du tableau
+        df_saison_stats["Taux de réussite"] = df_saison_stats["Taux de réussite"].astype(str) + " %"
+        st.table(df_saison_stats.set_index("Discipline"))
 
 # ---------------------------------------------------------
 # TAB 5 : ADMINISTRATION
@@ -352,11 +334,9 @@ with tab_admin:
                 df_gen = load_df(SCORES_FILE, ["Joueur", "Points", "AncienRang"])
                 df_res = load_df(RESULTATS_FILE, ["Journee"] + MATCH_NAMES + ["ScoreFinalReel"])
                 
-                # Filtrer les votes de la journée
                 votes_curr = df_v[df_v["Journee"].astype(str) == str(current_j)] if not df_v.empty else pd.DataFrame()
                 
                 if not votes_curr.empty:
-                    # Mise à jour AncienRang
                     if not df_gen.empty:
                         df_gen_sorted = df_gen.sort_values(by="Points", ascending=False).reset_index(drop=True)
                         df_gen_sorted["AncienRang"] = df_gen_sorted.index + 1
@@ -375,7 +355,6 @@ with tab_admin:
                         else: 
                             df_gen = pd.concat([df_gen, pd.DataFrame([{"Joueur": j_nom, "Points": pts_jour, "AncienRang": 0}])], ignore_index=True)
                     
-                    # Enregistrer résultats réels
                     res_row = {"Journee": current_j, "ScoreFinalReel": score_final_reel}
                     res_row.update(reels)
                     df_res = pd.concat([df_res[df_res["Journee"].astype(str) != str(current_j)], pd.DataFrame([res_row])], ignore_index=True)
