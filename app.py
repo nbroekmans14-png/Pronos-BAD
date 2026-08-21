@@ -19,7 +19,7 @@ MATCH_NAMES = [
 JOURNEES_LISTE = [f"J{i}" for i in range(1, 11)]  # J1 à J10
 
 # ---------------------------------------------------------
-# CONNEXION ET GESTION CACHE GOOGLE SHEETS
+# CONNEXION ET GESTION GOOGLE SHEETS
 # ---------------------------------------------------------
 @st.cache_resource
 def get_gspread_client():
@@ -35,8 +35,8 @@ def get_gspread_client():
     gc = gspread.authorize(credentials)
     return gc.open_by_url(st.secrets["SPREADSHEET_URL"])
 
-# Cache de 60s pour éviter la surcharge API
-@st.cache_data(ttl=60)
+# Cache court de 15s pour le chargement des tables
+@st.cache_data(ttl=15)
 def load_sheet(sheet_name, columns):
     try:
         sh = get_gspread_client()
@@ -63,6 +63,7 @@ def save_sheet(sheet_name, df):
 # CONFIGURATION ET COTES
 # ---------------------------------------------------------
 def get_config():
+    # Récupération en direct pour éviter qu'un joueur reste bloqué sur l'ancienne journée en cache
     df = load_sheet("config", ["Parametre", "Valeur"])
     config_dict = {"current_j": "J1", "lock_status": "unlocked", "msg_admin": "Préparez vos pronos !"}
     if not df.empty:
@@ -77,6 +78,7 @@ def save_config(current_j, lock_status, msg_admin):
         {"Parametre": "msg_admin", "Valeur": msg_admin}
     ])
     save_sheet("config", df)
+    st.cache_data.clear()
 
 def get_cotes(journee):
     df = load_sheet("cotes", ["Journee", "Match", "CoteNolff", "CoteAdv"])
@@ -132,8 +134,9 @@ with tab_prono:
     else:
         cotes_actuelles = get_cotes(current_j)
         
+        # Le nom du formulaire inclut 'current_j' pour être totalement réinitialisé au changement de journée
         with st.form(f"form_pronostics_{current_j}"):
-            nom_input = st.text_input("Ton Prénom & Nom", key=f"nom_{current_j}").strip()
+            nom_input = st.text_input("Ton Prénom & Nom", key=f"nom_input_{current_j}").strip()
             pronos = {}
             for m in MATCH_NAMES:
                 cN, cA = cotes_actuelles[m]
@@ -150,24 +153,25 @@ with tab_prono:
                 else:
                     df_v = load_sheet("votes", ["Journee", "Joueur"] + MATCH_NAMES + ["ScoreFinalProno"])
                     
-                    # Vérification stricte uniquement sur la journée en cours
+                    # Vérification stricte : uniquement si le joueur a DÉJÀ voté pour la JOURNÉE ACTUELLE
                     deja_vote = False
                     if not df_v.empty:
-                        vote_j_actuelle = df_v[df_v["Journee"].astype(str) == str(current_j)]
-                        deja_vote = (vote_j_actuelle["Joueur"].astype(str).str.lower() == nom_input.lower()).any()
+                        votes_journee_courante = df_v[df_v["Journee"].astype(str) == str(current_j)]
+                        deja_vote = (votes_journee_courante["Joueur"].astype(str).str.lower() == nom_input.lower()).any()
 
                     if deja_vote:
                         st.warning(f"⚠️ Ton vote pour la {current_j} est déjà enregistré !")
                     else:
                         nolff = sum(1 for v in pronos.values() if "St-Nolff" in v)
                         score_p = f"{nolff}-{len(MATCH_NAMES) - nolff}"
-                        nv = {"Journee": current_j, "Joueur": nom_input, "ScoreFinalProno": score_p}
+                        nv = {"Journee": str(current_j), "Joueur": nom_input, "ScoreFinalProno": score_p}
                         for k, v in pronos.items(): 
                             nv[k] = "St-Nolff" if "St-Nolff" in v else "Adversaire"
                         
                         df_v = pd.concat([df_v, pd.DataFrame([nv])], ignore_index=True)
                         save_sheet("votes", df_v)
-                        st.success(f"Vote enregistré pour la {current_j} ! Score pronostiqué : {score_p}")
+                        st.cache_data.clear()
+                        st.success(f"Vote enregistré avec succès pour la {current_j} ! Score pronostiqué : {score_p}")
                         st.balloons()
 
 # ---------------------------------------------------------
@@ -211,8 +215,8 @@ with tab_stats:
             pts_match_tot, total_votants = 0, 0
             
             for j in j_validees:
-                res_j = df_res[df_res["Journee"].astype(str) == j]
-                v_j = df_v_valid[df_v_valid["Journee"].astype(str) == j]
+                res_j = df_res[df_res["Journee"].astype(str) == str(j)]
+                v_j = df_v_valid[df_v_valid["Journee"].astype(str) == str(j)]
                 cotes_j = get_cotes(j)
                 
                 if not res_j.empty:
@@ -228,7 +232,6 @@ with tab_stats:
                         pts_match_tot += bons * cote_gagnante
                         total_votants += len(v_j)
             
-            # Calculs
             pct_victoire_nolff = round((victoires_nolff / total_rencontres) * 100) if total_rencontres > 0 else 0
             moyenne_pts_joueur = round(pts_match_tot / total_votants, 1) if total_votants > 0 else 0.0
             
@@ -247,7 +250,6 @@ with tab_admin:
     st.subheader("🛠️ Administration")
     if st.text_input("Code Administrateur", type="password") == st.secrets.get("ADMIN_PASSWORD", "2003"):
         
-        # SÉLECTION DE LA JOURNÉE ACTUELLE
         st.markdown("### 📅 Sélection de la Journée Active sur l'App")
         idx_actuel = JOURNEES_LISTE.index(current_j) if current_j in JOURNEES_LISTE else 0
         j_selectionnee = st.selectbox("Sélectionne la journée active :", JOURNEES_LISTE, index=idx_actuel)
@@ -256,7 +258,7 @@ with tab_admin:
             if st.button(f"📌 Activer la {j_selectionnee} sur l'application"):
                 st.cache_data.clear()
                 save_config(j_selectionnee, "unlocked", msg_admin)
-                st.success(f"La journée active est maintenant {j_selectionnee} !")
+                st.success(f"La journée active est maintenant passée à la {j_selectionnee} !")
                 st.rerun()
 
         st.divider()
@@ -268,7 +270,7 @@ with tab_admin:
             "📢 Message d'Annonce"
         ])
         
-        # TAB 1 : VALIDER LES RÉSULTATS DE LA JOURNÉE
+        # TAB 1 : VALIDER LES RÉSULTATS
         with t1:
             df_res = load_sheet("resultats", ["Journee"] + MATCH_NAMES + ["ScoreFinalReel"])
             deja_validee = not df_res.empty and (df_res["Journee"].astype(str) == str(j_selectionnee)).any()
@@ -279,7 +281,7 @@ with tab_admin:
             st.write(f"Saisir les résultats réels pour la **{j_selectionnee}** :")
             reels, res_n, res_a = {}, 0, 0
             for m in MATCH_NAMES:
-                choice = st.selectbox(m, ["St-Nolff", "Adversaire"], key=f"adm_{m}")
+                choice = st.selectbox(m, ["St-Nolff", "Adversaire"], key=f"adm_{m}_{j_selectionnee}")
                 reels[m] = choice
                 if choice == "St-Nolff": res_n += 1
                 else: res_a += 1
@@ -318,7 +320,7 @@ with tab_admin:
                         else: 
                             df_gen = pd.concat([df_gen, pd.DataFrame([{"Joueur": j_nom, "Points": pts_jour, "AncienRang": 0}])], ignore_index=True)
                     
-                    res_row = {"Journee": j_selectionnee, "ScoreFinalReel": score_reel}
+                    res_row = {"Journee": str(j_selectionnee), "ScoreFinalReel": score_reel}
                     res_row.update(reels)
                     df_res = pd.concat([df_res[df_res["Journee"].astype(str) != str(j_selectionnee)], pd.DataFrame([res_row])], ignore_index=True)
                     
@@ -329,20 +331,20 @@ with tab_admin:
                     idx_suiv = JOURNEES_LISTE.index(j_selectionnee) + 1
                     next_j = JOURNEES_LISTE[idx_suiv] if idx_suiv < len(JOURNEES_LISTE) else j_selectionnee
                     
-                    # Réinitialisation des cotes par défaut (50/50) pour la journée suivante
+                    # Réinitialisation des cotes à 50/50 pour la nouvelle journée
                     df_c = load_sheet("cotes", ["Journee", "Match", "CoteNolff", "CoteAdv"])
-                    nouvelles_cotes_defaut = [{"Journee": next_j, "Match": m, "CoteNolff": 50, "CoteAdv": 50} for m in MATCH_NAMES]
+                    nouvelles_cotes_defaut = [{"Journee": str(next_j), "Match": m, "CoteNolff": 50, "CoteAdv": 50} for m in MATCH_NAMES]
                     df_c = pd.concat([df_c[df_c["Journee"].astype(str) != str(next_j)], pd.DataFrame(nouvelles_cotes_defaut)], ignore_index=True)
                     save_sheet("cotes", df_c)
                     
-                    # Vider le cache et changer la configuration
+                    # Forcer l'invalidation globale du cache Streamlit
                     st.cache_data.clear()
                     save_config(next_j, "unlocked", msg_admin)
                     
-                    st.success(f"Résultats de la {j_selectionnee} enregistrés ! Les classements sont à jour et l'application est ouverte pour la {next_j}.")
+                    st.success(f"Résultats de la {j_selectionnee} enregistrés ! Les classements sont mis à jour et la {next_j} est ouverte.")
                     st.rerun()
 
-        # TAB 2 : CONSULTER LES VOTES D'UNE JOURNÉE SPÉCIFIQUE
+        # TAB 2 : CONSULTER LES VOTES
         with t_votes:
             st.subheader("📋 Pronostics enregistrés par journée")
             j_consultee = st.selectbox("Choisir la journée à consulter :", JOURNEES_LISTE, index=idx_actuel)
@@ -358,7 +360,7 @@ with tab_admin:
                 else:
                     st.info(f"Aucun vote enregistré pour {j_consultee}.")
 
-        # TAB 3 : DÉFINIR COTES POUR LA JOURNÉE SÉLECTIONNÉE
+        # TAB 3 : DÉFINIR COTES
         with t_cotes:
             st.subheader(f"Définir les cotes pour la {j_selectionnee}")
             st.caption("Ajuste les chances de victoire de St-Nolff sur 100 points.")
@@ -372,7 +374,7 @@ with tab_admin:
                 c_adv = 100 - c_nolff
                 st.caption(f"👉 **St-Nolff :** {c_nolff} pts | **Adversaire :** {c_adv} pts")
                 st.divider()
-                nouvelles_cotes.append({"Journee": j_selectionnee, "Match": m, "CoteNolff": c_nolff, "CoteAdv": c_adv})
+                nouvelles_cotes.append({"Journee": str(j_selectionnee), "Match": m, "CoteNolff": c_nolff, "CoteAdv": c_adv})
             
             if st.button("Enregistrer les Cotes"):
                 if not df_c.empty:
@@ -383,7 +385,7 @@ with tab_admin:
                 st.success(f"Cotes enregistrées pour la {j_selectionnee} !")
                 st.rerun()
 
-        # TAB 4 : ANNONCE & STATUT DES VOTES
+        # TAB 4 : ANNONCE & STATUT
         with t_annonce:
             st.subheader("📢 Message d'Annonce Général")
             msg = st.text_area("Rédiger / Modifier l'annonce :", msg_admin)
