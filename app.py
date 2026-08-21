@@ -3,6 +3,7 @@ import pandas as pd
 import gspread
 import json
 from google.oauth2.service_account import Credentials
+from streamlit_autorefresh import st_autorefresh
 
 # ---------------------------------------------------------
 # CONFIGURATION DE LA PAGE
@@ -90,6 +91,13 @@ def get_cotes(journee):
                 continue
         res[m] = (50, 50)
     return res
+
+# ---------------------------------------------------------
+# AUTO-REFRESH : permet aux joueurs de voir les changements
+# faits côté admin (changement de journée, verrouillage, etc.)
+# sans avoir besoin d'interagir eux-mêmes avec la page.
+# ---------------------------------------------------------
+st_autorefresh(interval=20_000, key="auto_refresh_global")
 
 # ---------------------------------------------------------
 # CHARGEMENT CONFIGURATION ACTUELLE
