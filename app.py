@@ -35,8 +35,9 @@ def get_gspread_client():
     gc = gspread.authorize(credentials)
     return gc.open_by_url(st.secrets["SPREADSHEET_URL"])
 
-# Chargement direct sans cache pour la configuration et les cotes
-def load_sheet_nocache(sheet_name, columns):
+# Cache de 60s pour éviter de dépasser les quotas Google Sheets (Erreur 429)
+@st.cache_data(ttl=60)
+def load_sheet(sheet_name, columns):
     try:
         sh = get_gspread_client()
         worksheet = sh.worksheet(sheet_name)
@@ -48,18 +49,13 @@ def load_sheet_nocache(sheet_name, columns):
     except Exception:
         return pd.DataFrame(columns=columns)
 
-# Cache de 10s pour les données lourdes (votes, résultats)
-@st.cache_data(ttl=10)
-def load_sheet_cached(sheet_name, columns):
-    return load_sheet_nocache(sheet_name, columns)
-
 def save_sheet(sheet_name, df):
     try:
         sh = get_gspread_client()
         worksheet = sh.worksheet(sheet_name)
         worksheet.clear()
         worksheet.update([df.columns.values.tolist()] + df.astype(str).values.tolist())
-        st.cache_data.clear()
+        st.cache_data.clear()  # Invalidation du cache après modification
     except Exception as e:
         st.error(f"Erreur de sauvegarde dans Google Sheets ({sheet_name}) : {e}")
 
@@ -67,8 +63,7 @@ def save_sheet(sheet_name, df):
 # CONFIGURATION ET COTES
 # ---------------------------------------------------------
 def get_config():
-    # Lecture EN DIRECT de la config dans Google Sheets (jamais de cache)
-    df = load_sheet_nocache("config", ["Parametre", "Valeur"])
+    df = load_sheet("config", ["Parametre", "Valeur"])
     config_dict = {"current_j": "J1", "lock_status": "unlocked", "msg_admin": "Préparez vos pronos !"}
     if not df.empty:
         for _, row in df.iterrows():
@@ -84,7 +79,7 @@ def save_config(current_j, lock_status, msg_admin):
     save_sheet("config", df)
 
 def get_cotes(journee):
-    df = load_sheet_nocache("cotes", ["Journee", "Match", "CoteNolff", "CoteAdv"])
+    df = load_sheet("cotes", ["Journee", "Match", "CoteNolff", "CoteAdv"])
     cotes_j = df[df["Journee"].astype(str) == str(journee)] if not df.empty else pd.DataFrame()
     res = {}
     for m in MATCH_NAMES:
@@ -97,15 +92,9 @@ def get_cotes(journee):
     return res
 
 # ---------------------------------------------------------
-# SYNCHRONISATION FORCÉE DE LA SESSION UTILISATEUR
+# CHARGEMENT CONFIGURATION ACTUELLE
 # ---------------------------------------------------------
 current_j, lock_status, msg_admin = get_config()
-
-# Si la journée active en BDD a changé par rapport à la session locale du joueur,
-# on réinitialise st.session_state pour forcer le rafraîchissement complet des formulaires.
-if "session_current_j" not in st.session_state or st.session_state["session_current_j"] != current_j:
-    st.session_state["session_current_j"] = current_j
-    st.cache_data.clear()
 
 # ---------------------------------------------------------
 # STYLES VISUELS (CSS)
@@ -122,12 +111,12 @@ st.markdown("""
     </style>
     """, unsafe_allow_html=True)
 
-# BANNIÈRE D'EN-TÊTE ET MESSAGE D'ANNONCE
+# BANNIÈRE D'EN-TÊTE
 st.markdown('<div class="header-box"><h1>Le MPP de l\'AOBD</h1><p>Cotes sur 100pts • +100pts si 8/8 • +100pts si Score Exact</p></div>', unsafe_allow_html=True)
 if msg_admin:
     st.markdown(f'<div class="admin-msg">📢 {msg_admin}</div>', unsafe_allow_html=True)
 
-# ONGLETS DE NAVIGATION
+# ONGLETS PRINCIPAUX
 tab_prono, tab_class, tab_stats, tab_admin = st.tabs([
     "🎯 Pronostiquer", 
     "🏆 Classement", 
@@ -146,7 +135,7 @@ with tab_prono:
     else:
         cotes_actuelles = get_cotes(current_j)
         
-        # Le nom du formulaire change dynamiquement selon current_j
+        # Le formulaire utilise current_j dans sa clé pour se réinitialiser automatiquement lors du changement de journée
         with st.form(key=f"form_pronostics_{current_j}"):
             nom_input = st.text_input("Ton Prénom & Nom", key=f"input_nom_{current_j}").strip()
             pronos = {}
@@ -163,28 +152,30 @@ with tab_prono:
             
             if submit:
                 if not nom_input:
-                    st.error("⚠️ Renseigne ton nom.")
+                    st.error("⚠️ Veuille renseigner ton nom.")
                 else:
-                    df_v = load_sheet_nocache("votes", ["Journee", "Joueur"] + MATCH_NAMES + ["ScoreFinalProno"])
+                    df_v = load_sheet("votes", ["Journee", "Joueur"] + MATCH_NAMES + ["ScoreFinalProno"])
                     
-                    # Vérification stricte uniquement sur la journée courante
+                    # VÉRIFICATION DE DOUBLON LIMITÉE UNIQUEMENT À LA JOURNÉE ACTUELLE
                     deja_vote = False
                     if not df_v.empty:
-                        votes_j = df_v[df_v["Journee"].astype(str) == str(current_j)]
-                        deja_vote = (votes_j["Joueur"].astype(str).str.lower() == nom_input.lower()).any()
+                        votes_cette_journee = df_v[df_v["Journee"].astype(str) == str(current_j)]
+                        if not votes_cette_journee.empty:
+                            deja_vote = (votes_cette_journee["Joueur"].astype(str).str.lower() == nom_input.lower()).any()
 
                     if deja_vote:
-                        st.warning(f"⚠️ Ton vote pour la {current_j} est déjà enregistré !")
+                        st.warning(f"⚠️ Tu as déjà enregistré tes pronostics pour la {current_j} !")
                     else:
-                        nolff = sum(1 for v in pronos.values() if "St-Nolff" in v)
-                        score_p = f"{nolff}-{len(MATCH_NAMES) - nolff}"
+                        nolff_count = sum(1 for v in pronos.values() if "St-Nolff" in v)
+                        score_p = f"{nolff_count}-{len(MATCH_NAMES) - nolff_count}"
+                        
                         nv = {"Journee": str(current_j), "Joueur": nom_input, "ScoreFinalProno": score_p}
                         for k, v in pronos.items(): 
                             nv[k] = "St-Nolff" if "St-Nolff" in v else "Adversaire"
                         
                         df_v = pd.concat([df_v, pd.DataFrame([nv])], ignore_index=True)
                         save_sheet("votes", df_v)
-                        st.success(f"Vote enregistré avec succès pour la {current_j} ! Score pronostiqué : {score_p}")
+                        st.success(f"Pronostics enregistrés avec succès pour la {current_j} ! Score pronostiqué : {score_p}")
                         st.balloons()
 
 # ---------------------------------------------------------
@@ -192,7 +183,7 @@ with tab_prono:
 # ---------------------------------------------------------
 with tab_class:
     st.subheader("🏆 Classement Général")
-    df_scores = load_sheet_cached("classement", ["Joueur", "Points", "AncienRang"])
+    df_scores = load_sheet("classement", ["Joueur", "Points", "AncienRang"])
     if not df_scores.empty:
         df_scores["Points"] = pd.to_numeric(df_scores["Points"])
         df_scores = df_scores.sort_values(by="Points", ascending=False).reset_index(drop=True)
@@ -213,8 +204,8 @@ with tab_class:
 # ---------------------------------------------------------
 with tab_stats:
     st.subheader("📊 Statistiques de la Saison")
-    df_v = load_sheet_cached("votes", ["Journee", "Joueur"] + MATCH_NAMES + ["ScoreFinalProno"])
-    df_res = load_sheet_cached("resultats", ["Journee"] + MATCH_NAMES + ["ScoreFinalReel"])
+    df_v = load_sheet("votes", ["Journee", "Joueur"] + MATCH_NAMES + ["ScoreFinalProno"])
+    df_res = load_sheet("resultats", ["Journee"] + MATCH_NAMES + ["ScoreFinalReel"])
     
     if df_res.empty or df_v.empty:
         st.info("Les statistiques apparaîtront dès la première journée validée.")
@@ -268,10 +259,9 @@ with tab_admin:
         j_selectionnee = st.selectbox("Sélectionne la journée active :", JOURNEES_LISTE, index=idx_actuel)
         
         if j_selectionnee != current_j:
-            if st.button(f"📌 Activer immédiatement la {j_selectionnee}"):
+            if st.button(f"📌 Activer la {j_selectionnee} maintenant"):
                 save_config(j_selectionnee, "unlocked", msg_admin)
-                st.session_state["session_current_j"] = j_selectionnee
-                st.success(f"Application passée sur la {j_selectionnee} !")
+                st.success(f"L'application est maintenant configurée sur la {j_selectionnee} !")
                 st.rerun()
 
         st.divider()
@@ -285,11 +275,11 @@ with tab_admin:
         
         # TAB 1 : VALIDER LES RÉSULTATS
         with t1:
-            df_res = load_sheet_nocache("resultats", ["Journee"] + MATCH_NAMES + ["ScoreFinalReel"])
+            df_res = load_sheet("resultats", ["Journee"] + MATCH_NAMES + ["ScoreFinalReel"])
             deja_validee = not df_res.empty and (df_res["Journee"].astype(str) == str(j_selectionnee)).any()
 
             if deja_validee:
-                st.warning(f"⚠️ La {j_selectionnee} a déjà été validée. Tu peux réenregistrer les scores réels ci-dessous si besoin.")
+                st.warning(f"⚠️ La {j_selectionnee} a déjà été validée. La revalider recalculera les points.")
 
             st.write(f"Saisir les résultats réels pour la **{j_selectionnee}** :")
             reels, res_n, res_a = {}, 0, 0
@@ -302,9 +292,9 @@ with tab_admin:
             score_reel = f"{res_n}-{res_a}"
             st.info(f"Score calculé : {score_reel}")
             
-            if st.button(f"Calculer & Enregistrer les points pour la {j_selectionnee}"):
-                df_v = load_sheet_nocache("votes", ["Journee", "Joueur"] + MATCH_NAMES + ["ScoreFinalProno"])
-                df_gen = load_sheet_nocache("classement", ["Joueur", "Points", "AncienRang"])
+            if st.button(f"Calculer & Valider la {j_selectionnee}"):
+                df_v = load_sheet("votes", ["Journee", "Joueur"] + MATCH_NAMES + ["ScoreFinalProno"])
+                df_gen = load_sheet("classement", ["Joueur", "Points", "AncienRang"])
                 cotes_j = get_cotes(j_selectionnee)
                 
                 votes_c = df_v[df_v["Journee"].astype(str) == str(j_selectionnee)] if not df_v.empty else pd.DataFrame()
@@ -340,21 +330,20 @@ with tab_admin:
                     save_sheet("classement", df_gen)
                     save_sheet("resultats", df_res)
 
-                    # INCRÉMENTATION DE LA JOURNÉE
+                    # PASSAGE AUTOMATIQUE À LA JOURNÉE SUIVANTE
                     idx_act = JOURNEES_LISTE.index(j_selectionnee) if j_selectionnee in JOURNEES_LISTE else 0
                     idx_suiv = idx_act + 1
                     next_j = JOURNEES_LISTE[idx_suiv] if idx_suiv < len(JOURNEES_LISTE) else j_selectionnee
 
-                    # Enregistrement des cotes par défaut 50/50 pour la nouvelle journée si besoin
-                    df_c = load_sheet_nocache("cotes", ["Journee", "Match", "CoteNolff", "CoteAdv"])
+                    # Génération de cotes par défaut 50/50 pour la nouvelle journée si elles n'existent pas encore
+                    df_c = load_sheet("cotes", ["Journee", "Match", "CoteNolff", "CoteAdv"])
                     if df_c.empty or (df_c["Journee"].astype(str) != str(next_j)).all():
-                        nouvelles_cotes_defaut = [{"Journee": str(next_j), "Match": m, "CoteNolff": 50, "CoteAdv": 50} for m in MATCH_NAMES]
-                        df_c = pd.concat([df_c, pd.DataFrame(nouvelles_cotes_defaut)], ignore_index=True)
+                        cotes_defaut = [{"Journee": str(next_j), "Match": m, "CoteNolff": 50, "CoteAdv": 50} for m in MATCH_NAMES]
+                        df_c = pd.concat([df_c, pd.DataFrame(cotes_defaut)], ignore_index=True)
                         save_sheet("cotes", df_c)
 
-                    # SAUVEGARDE DE LA NOUVELLE CONFIGURATION DÉBLOQUÉE
+                    # Passage à la journée suivante avec déverrouillage des votes
                     save_config(next_j, "unlocked", f"Les votes sont ouverts pour la {next_j} !")
-                    st.session_state["session_current_j"] = next_j
 
                     st.success(f"✅ Journée {j_selectionnee} validée ! L'application est maintenant configurée sur la {next_j} avec votes ouverts.")
                     st.rerun()
@@ -363,7 +352,7 @@ with tab_admin:
         with t_votes:
             st.subheader("📋 Pronostics enregistrés")
             j_consultee = st.selectbox("Choisir la journée à consulter :", JOURNEES_LISTE, index=idx_actuel)
-            df_v = load_sheet_nocache("votes", ["Journee", "Joueur"] + MATCH_NAMES + ["ScoreFinalProno"])
+            df_v = load_sheet("votes", ["Journee", "Joueur"] + MATCH_NAMES + ["ScoreFinalProno"])
             
             if df_v.empty:
                 st.info("Aucun pronostic n'a encore été enregistré.")
@@ -380,7 +369,7 @@ with tab_admin:
             st.subheader(f"Définir les cotes pour la {j_selectionnee}")
             st.caption("Ajuste les chances de victoire de St-Nolff sur 100 points.")
             
-            df_c = load_sheet_nocache("cotes", ["Journee", "Match", "CoteNolff", "CoteAdv"])
+            df_c = load_sheet("cotes", ["Journee", "Match", "CoteNolff", "CoteAdv"])
             anciennes_cotes = get_cotes(j_selectionnee)
             
             nouvelles_cotes = []
