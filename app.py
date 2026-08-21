@@ -138,15 +138,23 @@ tab_prono, tab_class, tab_stats, tab_admin = st.tabs([
 # 1. PRONOSTIQUER
 # ---------------------------------------------------------
 with tab_prono:
-    st.subheader(f"🎯 Pronostics pour la {current_j}")
+    st.subheader("🎯 Pronostics")
     
-    if lock_status == "locked":
-        st.warning(f"🔒 Les votes sont actuellement clos pour la {current_j}.")
+    # Menu déroulant pour consulter/pronostiquer une journée (Défaut : Journée ouverte par l'admin)
+    idx_defaut = JOURNEES_LISTE.index(current_j) if current_j in JOURNEES_LISTE else 0
+    j_prono = st.selectbox("Sélectionne la journée à consulter ou parier :", JOURNEES_LISTE, index=idx_defaut, key="select_j_prono")
+    
+    # Vérification strict des permissions de vote
+    if j_prono != current_j:
+        st.warning(f"🔒 Seule la **{current_j}** est actuellement ouverte aux votes. Tu peux consulter les cotes de la {j_prono}, mais tu ne peux pas parier dessus.")
+    elif lock_status == "locked":
+        st.warning(f"🔒 Les votes sont actuellement clos pour la {j_prono}.")
     else:
-        cotes_actuelles = get_cotes(current_j)
+        st.success(f"🟢 Les votes sont ouverts pour la **{j_prono}** !")
+        cotes_actuelles = get_cotes(j_prono)
         
-        with st.form(key=f"form_pronostics_{current_j}"):
-            nom_input = st.text_input("Ton Prénom & Nom", key=f"input_nom_{current_j}").strip()
+        with st.form(key=f"form_pronostics_{j_prono}"):
+            nom_input = st.text_input("Ton Prénom & Nom", key=f"input_nom_{j_prono}").strip()
             pronos = {}
             for m in MATCH_NAMES:
                 cN, cA = cotes_actuelles[m]
@@ -154,7 +162,7 @@ with tab_prono:
                 pronos[m] = st.radio(
                     f"Vainqueur {m}", 
                     [f"St-Nolff 🐺 ({cN} pts)", f"Adversaire ({cA} pts)"], 
-                    key=f"radio_{m}_{current_j}", horizontal=True, label_visibility="collapsed"
+                    key=f"radio_{m}_{j_prono}", horizontal=True, label_visibility="collapsed"
                 )
             
             submit = st.form_submit_button("🚀 VALIDER MA GRILLE")
@@ -167,21 +175,21 @@ with tab_prono:
                     
                     deja_vote = False
                     if not df_v.empty:
-                        votes_j = df_v[df_v["Journee"].astype(str) == str(current_j)]
+                        votes_j = df_v[df_v["Journee"].astype(str) == str(j_prono)]
                         deja_vote = (votes_j["Joueur"].astype(str).str.lower() == nom_input.lower()).any()
 
                     if deja_vote:
-                        st.warning(f"⚠️ Ton vote pour la {current_j} est déjà enregistré !")
+                        st.warning(f"⚠️ Ton vote pour la {j_prono} est déjà enregistré !")
                     else:
                         nolff = sum(1 for v in pronos.values() if "St-Nolff" in v)
                         score_p = f"{nolff}-{len(MATCH_NAMES) - nolff}"
-                        nv = {"Journee": str(current_j), "Joueur": nom_input, "ScoreFinalProno": score_p}
+                        nv = {"Journee": str(j_prono), "Joueur": nom_input, "ScoreFinalProno": score_p}
                         for k, v in pronos.items(): 
                             nv[k] = "St-Nolff" if "St-Nolff" in v else "Adversaire"
                         
                         df_v = pd.concat([df_v, pd.DataFrame([nv])], ignore_index=True)
                         save_sheet("votes", df_v)
-                        st.success(f"Vote enregistré avec succès pour la {current_j} ! Score pronostiqué : {score_p}")
+                        st.success(f"Vote enregistré avec succès pour la {j_prono} ! Score pronostiqué : {score_p}")
                         st.balloons()
 
 # ---------------------------------------------------------
@@ -260,14 +268,16 @@ with tab_admin:
     st.subheader("🛠️ Administration")
     if st.text_input("Code Administrateur", type="password") == st.secrets.get("ADMIN_PASSWORD", "2003"):
         
-        st.markdown("### 📅 Journée Active")
+        st.markdown("### 🔓 Journée Ouverte aux Joueurs")
+        st.info(f"Seule **une seule journée** est accessible aux votes à la fois. Actuellement : **{current_j}**")
+        
         idx_actuel = JOURNEES_LISTE.index(current_j) if current_j in JOURNEES_LISTE else 0
-        j_selectionnee = st.selectbox("Sélectionne la journée active :", JOURNEES_LISTE, index=idx_actuel)
+        j_selectionnee = st.selectbox("Choisir la journée unique à OUVRIR aux votes :", JOURNEES_LISTE, index=idx_actuel)
         
         if j_selectionnee != current_j:
-            if st.button(f"📌 Activer immédiatement la {j_selectionnee}"):
-                save_config(j_selectionnee, "unlocked", msg_admin)
-                st.success(f"Application passée sur la {j_selectionnee} !")
+            if st.button(f"📌 Ouvrir uniquement la {j_selectionnee} aux votes"):
+                save_config(j_selectionnee, "unlocked", f"Les votes sont ouverts pour la {j_selectionnee} !")
+                st.success(f"Succès ! Seule la {j_selectionnee} est désormais ouverte aux votes.")
                 st.rerun()
 
         st.divider()
@@ -338,7 +348,7 @@ with tab_admin:
                 df_res = pd.concat([df_res[df_res["Journee"].astype(str) != str(j_selectionnee)], pd.DataFrame([res_row])], ignore_index=True)
                 save_sheet("resultats", df_res)
 
-                # INCRÉMENTATION DE LA JOURNÉE (SORTIE DU IF VOTES_C)
+                # INCRÉMENTATION AUTOMATIQUE VERS LA JOURNÉE SUIVANTE
                 idx_act = JOURNEES_LISTE.index(j_selectionnee) if j_selectionnee in JOURNEES_LISTE else 0
                 idx_suiv = idx_act + 1
                 next_j = JOURNEES_LISTE[idx_suiv] if idx_suiv < len(JOURNEES_LISTE) else j_selectionnee
@@ -350,10 +360,10 @@ with tab_admin:
                     df_c = pd.concat([df_c, pd.DataFrame(nouvelles_cotes_defaut)], ignore_index=True)
                     save_sheet("cotes", df_c)
 
-                # SAUVEGARDE ET DEBLOCAGE DE LA JOURNEE SUIVANTE
+                # SAUVEGARDE ET OUVERTURE UNIQUE DE LA JOURNÉE SUIVANTE
                 save_config(next_j, "unlocked", f"Les votes sont ouverts pour la {next_j} !")
 
-                st.success(f"✅ Journée {j_selectionnee} validée ! L'application est maintenant configurée sur la {next_j} avec votes ouverts.")
+                st.success(f"✅ Journée {j_selectionnee} validée ! L'application est maintenant ouverte **uniquement pour la {next_j}**.")
                 st.rerun()
 
         # TAB 2 : CONSULTER LES VOTES
@@ -401,11 +411,10 @@ with tab_admin:
             st.subheader("📢 Message d'Annonce Général")
             msg = st.text_area("Rédiger / Modifier l'annonce :", msg_admin)
             
-            st.subheader("🔒 Statut des Votes")
-            lock = st.radio("Autoriser les votes ?", ["unlocked", "locked"], index=0 if lock_status == "unlocked" else 1)
+            st.subheader("🔒 Verrouillage Global des Votes")
+            lock = st.radio("Autoriser les votes sur la journée ouverte ?", ["unlocked", "locked"], index=0 if lock_status == "unlocked" else 1)
             
             if st.button("Sauvegarder l'Annonce et le Statut"): 
-                # Toujours lire la vraie journée active en base avant d'enregistrer
                 current_j_fresh, _, _ = get_config()
                 save_config(current_j_fresh, lock, msg)
                 st.success(f"Configuration sauvegardée pour {current_j_fresh} !")
