@@ -63,7 +63,6 @@ def save_sheet(sheet_name, df):
 # CONFIGURATION ET COTES
 # ---------------------------------------------------------
 def get_config():
-    # Récupération en direct pour éviter qu'un joueur reste bloqué sur l'ancienne journée en cache
     df = load_sheet("config", ["Parametre", "Valeur"])
     config_dict = {"current_j": "J1", "lock_status": "unlocked", "msg_admin": "Préparez vos pronos !"}
     if not df.empty:
@@ -108,7 +107,7 @@ st.markdown("""
     </style>
     """, unsafe_allow_html=True)
 
-# CHARGEMENT DE LA CONFIGURATION
+# CHARGEMENT DE LA CONFIGURATION EN DIRECT
 current_j, lock_status, msg_admin = get_config()
 
 # BANNIÈRE D'EN-TÊTE ET MESSAGE D'ANNONCE
@@ -134,7 +133,7 @@ with tab_prono:
     else:
         cotes_actuelles = get_cotes(current_j)
         
-        # Le nom du formulaire inclut 'current_j' pour être totalement réinitialisé au changement de journée
+        # Formulaire lié dynamiquement à la journée courante
         with st.form(f"form_pronostics_{current_j}"):
             nom_input = st.text_input("Ton Prénom & Nom", key=f"nom_input_{current_j}").strip()
             pronos = {}
@@ -153,7 +152,7 @@ with tab_prono:
                 else:
                     df_v = load_sheet("votes", ["Journee", "Joueur"] + MATCH_NAMES + ["ScoreFinalProno"])
                     
-                    # Vérification stricte : uniquement si le joueur a DÉJÀ voté pour la JOURNÉE ACTUELLE
+                    # Verification uniquement sur la journee courante
                     deja_vote = False
                     if not df_v.empty:
                         votes_journee_courante = df_v[df_v["Journee"].astype(str) == str(current_j)]
@@ -327,21 +326,32 @@ with tab_admin:
                     save_sheet("classement", df_gen)
                     save_sheet("resultats", df_res)
 
-                    # Passage automatique à la journée suivante
-                    idx_suiv = JOURNEES_LISTE.index(j_selectionnee) + 1
-                    next_j = JOURNEES_LISTE[idx_suiv] if idx_suiv < len(JOURNEES_LISTE) else j_selectionnee
+                    # ---------------------------------------------------------
+                    # PASSAGE AUTOMATIQUE À LA JOURNÉE SUIVANTE ET DÉBLOCAGE
+                    # ---------------------------------------------------------
+                    idx_act = JOURNEES_LISTE.index(j_selectionnee) if j_selectionnee in JOURNEES_LISTE else 0
+                    idx_suiv = idx_act + 1
                     
-                    # Réinitialisation des cotes à 50/50 pour la nouvelle journée
+                    if idx_suiv < len(JOURNEES_LISTE):
+                        next_j = JOURNEES_LISTE[idx_suiv]
+                    else:
+                        next_j = j_selectionnee  # Si J10 atteinte
+                    
+                    # 1. Préparer les cotes par défaut 50/50 pour la nouvelle journée si pas encore définies
                     df_c = load_sheet("cotes", ["Journee", "Match", "CoteNolff", "CoteAdv"])
-                    nouvelles_cotes_defaut = [{"Journee": str(next_j), "Match": m, "CoteNolff": 50, "CoteAdv": 50} for m in MATCH_NAMES]
-                    df_c = pd.concat([df_c[df_c["Journee"].astype(str) != str(next_j)], pd.DataFrame(nouvelles_cotes_defaut)], ignore_index=True)
-                    save_sheet("cotes", df_c)
-                    
-                    # Forcer l'invalidation globale du cache Streamlit
+                    cotes_existantes = df_c[df_c["Journee"].astype(str) == str(next_j)] if not df_c.empty else pd.DataFrame()
+                    if cotes_existantes.empty:
+                        nouvelles_cotes_defaut = [{"Journee": str(next_j), "Match": m, "CoteNolff": 50, "CoteAdv": 50} for m in MATCH_NAMES]
+                        df_c = pd.concat([df_c, pd.DataFrame(nouvelles_cotes_defaut)], ignore_index=True)
+                        save_sheet("cotes", df_c)
+
+                    # 2. Vider les caches Streamlit
                     st.cache_data.clear()
-                    save_config(next_j, "unlocked", msg_admin)
-                    
-                    st.success(f"Résultats de la {j_selectionnee} enregistrés ! Les classements sont mis à jour et la {next_j} est ouverte.")
+
+                    # 3. Passer la config sur la NOUVELLE journée et DÉBLOQUER ("unlocked")
+                    save_config(next_j, "unlocked", f"Les votes sont ouverts pour la {next_j} !")
+
+                    st.success(f"✅ Résultats de la {j_selectionnee} enregistrés ! L'application est passée sur la {next_j} et les votes sont ouverts à tous !")
                     st.rerun()
 
         # TAB 2 : CONSULTER LES VOTES
