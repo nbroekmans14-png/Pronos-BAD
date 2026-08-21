@@ -35,7 +35,6 @@ def get_gspread_client():
     gc = gspread.authorize(credentials)
     return gc.open_by_url(st.secrets["SPREADSHEET_URL"])
 
-# Cache de 60s pour préserver les quotas d'API Google Sheets (Sauf config)
 @st.cache_data(ttl=60)
 def load_sheet(sheet_name, columns):
     try:
@@ -55,11 +54,10 @@ def save_sheet(sheet_name, df):
         worksheet = sh.worksheet(sheet_name)
         worksheet.clear()
         worksheet.update([df.columns.values.tolist()] + df.astype(str).values.tolist())
-        st.cache_data.clear()  # Réinitialiser le cache local après écriture
+        st.cache_data.clear()
     except Exception as e:
         st.error(f"Erreur de sauvegarde dans Google Sheets ({sheet_name}) : {e}")
 
-# Lecture directe SANS CACHE pour l'onglet critique config
 def load_config_sheet():
     try:
         sh = get_gspread_client()
@@ -106,7 +104,6 @@ def get_cotes(journee):
 # ---------------------------------------------------------
 current_j, lock_status, msg_admin = get_config()
 
-# Synchronisation avec le session_state de Streamlit
 if "current_j" not in st.session_state:
     st.session_state["current_j"] = current_j
 
@@ -124,6 +121,13 @@ st.markdown("""
     .header-box p { color: #ffeb3b !important; margin-top: 5px; font-weight: bold; }
     .admin-msg { background-color: #f0f2f6 !important; padding: 12px; border-radius: 10px; text-align: center; font-weight: 700; margin: 15px 0; }
     .match-header { background-color: #f0f2f6 !important; padding: 6px 10px; font-weight: 700; border-radius: 6px; margin-top: 8px; }
+    
+    /* Styles spécifiques aux Statistiques (Thème React) */
+    .card-box { background-color: #ffffff; border: 1px solid #f0f0f0; border-radius: 12px; padding: 20px; margin-bottom: 20px; box-shadow: 0 2px 4px rgba(0,0,0,0.05); }
+    .badge-win { background-color: #d1fae5; color: #065f46; padding: 3px 10px; border-radius: 9999px; font-size: 12px; font-weight: bold; }
+    .badge-loss { background-color: #fee2e2; color: #991b1b; padding: 3px 10px; border-radius: 9999px; font-size: 12px; font-weight: bold; }
+    .box-piege { background-color: #fffbeb; border-left: 4px solid #f59e0b; padding: 15px; border-radius: 8px; margin-bottom: 12px; }
+    .box-banque { background-color: #eff6ff; border-left: 4px solid #3b82f6; padding: 15px; border-radius: 8px; }
     </style>
     """, unsafe_allow_html=True)
 
@@ -218,52 +222,149 @@ with tab_class:
         st.info("Aucun résultat validé pour le moment.")
 
 # ---------------------------------------------------------
-# 3. STATISTIQUES SAISON
+# 3. STATISTIQUES SAISON (ADAPTÉ DU COMPOSANT REACT)
 # ---------------------------------------------------------
 with tab_stats:
-    st.subheader("📊 Statistiques de la Saison")
     df_v = load_sheet("votes", ["Journee", "Joueur"] + MATCH_NAMES + ["ScoreFinalProno"])
     df_res = load_sheet("resultats", ["Journee"] + MATCH_NAMES + ["ScoreFinalReel"])
-    
+
     if df_res.empty or df_v.empty:
         st.info("Les statistiques apparaîtront dès la première journée validée.")
     else:
         j_validees = df_res["Journee"].astype(str).unique().tolist()
         df_v_valid = df_v[df_v["Journee"].astype(str).isin(j_validees)]
-        
-        stats_m = []
+
+        # --- SECTION 1 : Pronostics vs Réalité par Match ---
+        st.markdown("""
+        <div class="card-box">
+            <h3 style="margin:0; font-weight:bold;">📊 1. Pronostics vs Réalité par Match (Saint-Nolff)</h3>
+            <p style="font-size: 13px; color: #6b7280; font-style: italic; margin-top:2px;">Mise à jour progressive au fil des journées.</p>
+        </div>
+        """, unsafe_allow_html=True)
+
+        matches_stats = []
         for m in MATCH_NAMES:
-            victoires_nolff, total_rencontres = 0, len(j_validees)
-            pts_match_tot, total_votants = 0, 0
-            
+            total_votes_m = 0
+            votes_nolff_m = 0
+            victoires_reelles_nolff = 0
+            total_matchs_joues = len(j_validees)
+
             for j in j_validees:
                 res_j = df_res[df_res["Journee"].astype(str) == str(j)]
                 v_j = df_v_valid[df_v_valid["Journee"].astype(str) == str(j)]
-                cotes_j = get_cotes(j)
-                
-                if not res_j.empty:
+
+                if not res_j.empty and res_j.iloc[0][m] == "St-Nolff":
+                    victoires_reelles_nolff += 1
+
+                if not v_j.empty:
+                    total_votes_m += len(v_j)
+                    votes_nolff_m += sum(1 for v in v_j[m] if v == "St-Nolff")
+
+            pct_prono = round((votes_nolff_m / total_votes_m) * 100) if total_votes_m > 0 else 0
+            pct_reel = round((victoires_reelles_nolff / total_matchs_joues) * 100) if total_matchs_joues > 0 else 0
+
+            # Calcul du taux de succès global des joueurs sur ce match (pour la section imprévisibilité)
+            bons_pronos = 0
+            for j in j_validees:
+                res_j = df_res[df_res["Journee"].astype(str) == str(j)]
+                v_j = df_v_valid[df_v_valid["Journee"].astype(str) == str(j)]
+                if not res_j.empty and not v_j.empty:
                     vrai = res_j.iloc[0][m]
-                    if vrai == "St-Nolff":
-                        victoires_nolff += 1
-                        cote_gagnante = cotes_j[m][0]
-                    else:
-                        cote_gagnante = cotes_j[m][1]
-                    
-                    if not v_j.empty:
-                        bons = sum(1 for v in v_j[m] if v == vrai)
-                        pts_match_tot += bons * cote_gagnante
-                        total_votants += len(v_j)
-            
-            pct_victoire_nolff = round((victoires_nolff / total_rencontres) * 100) if total_rencontres > 0 else 0
-            moyenne_pts_joueur = round(pts_match_tot / total_votants, 1) if total_votants > 0 else 0.0
-            
-            stats_m.append({
-                "Match": m, 
-                "% Victoire St-Nolff": f"{pct_victoire_nolff} %", 
-                "Moyenne pts rapportés": f"{moyenne_pts_joueur} pts"
+                    bons_pronos += sum(1 for v in v_j[m] if v == vrai)
+
+            acc_rate = round((bons_pronos / total_votes_m) * 100) if total_votes_m > 0 else 0
+
+            matches_stats.append({
+                "match": m,
+                "prono": pct_prono,
+                "reel": pct_reel,
+                "accuracy": acc_rate
             })
+
+        df_m_display = pd.DataFrame(matches_stats)
+        df_m_display["Prono St-Nolff (%)"] = df_m_display["prono"].apply(lambda x: f"{x} %")
+        df_m_display["Victoire Réelle St-Nolff (%)"] = df_m_display["reel"].apply(lambda x: f"{x} %")
+        st.table(df_m_display[["match", "Prono St-Nolff (%)", "Victoire Réelle St-Nolff (%)"]].set_index("match"))
+
+        # --- SECTION 2 : Classement au Taux de Réussite ---
+        st.markdown("""
+        <div class="card-box">
+            <h3 style="margin:0; font-weight:bold;">🎯 2. Classement au Taux de Réussite (Précision)</h3>
+            <p style="font-size: 13px; color: #6b7280; font-style: italic; margin-top:2px;">Mise à jour progressive au fil des journées.</p>
+        </div>
+        """, unsafe_allow_html=True)
+
+        player_stats = []
+        joueurs_uniques = df_v_valid["Joueur"].unique()
+
+        for player in joueurs_uniques:
+            df_p = df_v_valid[df_v_valid["Joueur"] == player]
+            correct = 0
+            total = 0
+
+            for _, row in df_p.iterrows():
+                j = str(row["Journee"])
+                res_j = df_res[df_res["Journee"].astype(str) == j]
+                if not res_j.empty:
+                    for m in MATCH_NAMES:
+                        total += 1
+                        if row[m] == res_j.iloc[0][m]:
+                            correct += 1
+
+            if total > 0:
+                rate_val = (correct / total) * 100
+                player_stats.append({
+                    "player": player,
+                    "correct": correct,
+                    "total": total,
+                    "rate_num": rate_val,
+                    "rate": f"{rate_val:.1f} %".replace(".", ",")
+                })
+
+        df_p_rank = pd.DataFrame(player_stats)
+        if not df_p_rank.empty:
+            df_p_rank = df_p_rank.sort_values(by="rate_num", ascending=False).reset_index(drop=True)
             
-        st.table(pd.DataFrame(stats_m).set_index("Match"))
+            medals = ['🥇', '🥈', '🥉']
+            df_p_rank["Rang"] = [medals[i] if i < 3 else str(i + 1) for i in range(len(df_p_rank))]
+
+            st.table(df_p_rank[["Rang", "player", "correct", "total", "rate"]].rename(columns={
+                "player": "Joueur",
+                "correct": "Bonnes réponses",
+                "total": "Total Matchs",
+                "rate": "Taux de Réussite"
+            }).set_index("Rang"))
+
+        # --- SECTION 3 : Analyse d'Imprévisibilité ---
+        st.markdown("""
+        <div class="card-box">
+            <h3 style="margin:0; font-weight:bold;">🔮 3. Analyse d'Imprévisibilité des Matchs</h3>
+            <p style="font-size: 13px; color: #6b7280; font-style: italic; margin-top:2px;">Basé sur le taux de réussite global des pronostics.</p>
+        </div>
+        """, unsafe_allow_html=True)
+
+        if matches_stats:
+            sorted_by_acc = sorted(matches_stats, key=lambda x: x["accuracy"])
+            hardest = sorted_by_acc[0]
+            easiest = sorted_by_acc[-1]
+
+            st.markdown(f"""
+            <div class="box-piege">
+                <h4 style="margin:0; color:#92400e; font-weight:bold;">🌀 Le Match le plus Imprévisible (Le Piège)</h4>
+                <p style="font-size: 16px; font-weight: bold; color: #b45309; margin: 4px 0;">{hardest['match']}</p>
+                <p style="margin:0; color:#78350f; font-size:14px;">
+                    🎯 <b>Seulement {hardest['accuracy']} %</b> des joueurs ont trouvé les bons résultats sur ce type de match.
+                </p>
+            </div>
+
+            <div class="box-banque">
+                <h4 style="margin:0; color:#1e40af; font-weight:bold;">🔒 Le Match le plus Prévisible (La Banque)</h4>
+                <p style="font-size: 16px; font-weight: bold; color: #1d4ed8; margin: 4px 0;">{easiest['match']}</p>
+                <p style="margin:0; color:#1e3a8a; font-size:14px;">
+                    🎯 <b>{easiest['accuracy']} %</b> des pronostics ont vu juste sur ce match !
+                </p>
+            </div>
+            """, unsafe_allow_html=True)
 
 # ---------------------------------------------------------
 # 4. ADMINISTRATION
@@ -277,7 +378,6 @@ with tab_admin:
         
         idx_actuel = JOURNEES_LISTE.index(current_j) if current_j in JOURNEES_LISTE else 0
         
-        # Formulaire dédié pour valider le changement de journée active
         with st.form("form_change_journee"):
             j_selectionnee = st.selectbox("Choisir la journée unique à OUVRIR aux votes :", JOURNEES_LISTE, index=idx_actuel)
             btn_ouvrir = st.form_submit_button(f"📌 Ouvrir la {j_selectionnee} aux votes")
