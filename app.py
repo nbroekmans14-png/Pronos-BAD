@@ -1,6 +1,8 @@
 import streamlit as st
 import pandas as pd
 import gspread
+import json
+from google.oauth2.service_account import Credentials
 
 # CONFIGURATION
 st.set_page_config(page_title="MPP AOBD", page_icon="🏸", layout="centered")
@@ -8,20 +10,20 @@ st.set_page_config(page_title="MPP AOBD", page_icon="🏸", layout="centered")
 MATCH_NAMES = ["Simple Homme 1", "Simple Homme 2", "Simple Dame 1", "Simple Dame 2", 
                "Double Homme", "Double Dame", "Mixte 1", "Mixte 2"]
 
-# --- CONNEXION GOOGLE SHEETS & NETTOYAGE CLE PEM ---
+# --- CONNEXION GOOGLE SHEETS SÉCURISÉE ---
 @st.cache_resource
 def get_gspread_client():
-    creds = dict(st.secrets["gcp_service_account"])
-    
-    # Nettoyage automatique du format de la clé privée PEM
-    pk = str(creds["private_key"])
-    if "\\n" in pk:
-        pk = pk.replace("\\n", "\n")
-    creds["private_key"] = pk
+    creds_dict = json.loads(st.secrets["gcp_json_credentials"], strict=False)
+    if "private_key" in creds_dict:
+        creds_dict["private_key"] = creds_dict["private_key"].replace("\\n", "\n")
 
-    gc = gspread.service_account_from_dict(creds)
-    sh = gc.open_by_url(st.secrets["SPREADSHEET_URL"])
-    return sh
+    scopes = [
+        "https://www.googleapis.com/auth/spreadsheets",
+        "https://www.googleapis.com/auth/drive"
+    ]
+    credentials = Credentials.from_service_account_info(creds_dict, scopes=scopes)
+    gc = gspread.authorize(credentials)
+    return gc.open_by_url(st.secrets["SPREADSHEET_URL"])
 
 def load_sheet(sheet_name, columns):
     try:
@@ -44,15 +46,13 @@ def save_sheet(sheet_name, df):
     except Exception as e:
         st.error(f"Erreur de sauvegarde dans Google Sheets ({sheet_name}) : {e}")
 
-# GESTION DYNAMIQUE DE LA CONFIGURATION (JOURNÉE, LOCK, MESSAGE)
+# GESTION CONFIGURATION ET COTES
 def get_config():
     df = load_sheet("config", ["Parametre", "Valeur"])
     config_dict = {"current_j": "J1", "lock_status": "unlocked", "msg_admin": "Préparez vos pronos !"}
-    
     if not df.empty:
         for _, row in df.iterrows():
             config_dict[str(row["Parametre"])] = str(row["Valeur"])
-            
     return config_dict["current_j"], config_dict["lock_status"], config_dict["msg_admin"]
 
 def save_config(current_j, lock_status, msg_admin):
@@ -241,7 +241,6 @@ with tab_admin:
     if st.text_input("Code Administrateur", type="password") == st.secrets.get("ADMIN_PASSWORD", "2003"):
         t1, t_cotes, t2 = st.tabs(["Valider Journée", "Définir Cotes", "Annonce & Config"])
         
-        # Validation des résultats
         with t1:
             st.write(f"Résultats réels pour **{current_j}** :")
             reels, res_n, res_a = {}, 0, 0
@@ -294,7 +293,6 @@ with tab_admin:
                     st.success("Résultats et classement sauvegardés !")
                     st.rerun()
 
-        # Définition des cotes
         with t_cotes:
             st.subheader(f"Définir les cotes pour {current_j}")
             st.caption("Ajuste les chances de victoire de St-Nolff sur 100 points.")
@@ -318,7 +316,6 @@ with tab_admin:
                 st.success("Cotes enregistrées !")
                 st.rerun()
 
-        # Config de la journée (J1, J2, J3...)
         with t2:
             msg = st.text_area("Message d'annonce", msg_admin)
             if st.button("Sauvegarder Message"): 
