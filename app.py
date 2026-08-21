@@ -122,12 +122,8 @@ st.markdown("""
     .admin-msg { background-color: #f0f2f6 !important; padding: 12px; border-radius: 10px; text-align: center; font-weight: 700; margin: 15px 0; }
     .match-header { background-color: #f0f2f6 !important; padding: 6px 10px; font-weight: 700; border-radius: 6px; margin-top: 8px; }
     
-    /* Styles spécifiques aux Statistiques (Thème React) */
+    /* Styles spécifiques aux Statistiques */
     .card-box { background-color: #ffffff; border: 1px solid #f0f0f0; border-radius: 12px; padding: 20px; margin-bottom: 20px; box-shadow: 0 2px 4px rgba(0,0,0,0.05); }
-    .badge-win { background-color: #d1fae5; color: #065f46; padding: 3px 10px; border-radius: 9999px; font-size: 12px; font-weight: bold; }
-    .badge-loss { background-color: #fee2e2; color: #991b1b; padding: 3px 10px; border-radius: 9999px; font-size: 12px; font-weight: bold; }
-    .box-piege { background-color: #fffbeb; border-left: 4px solid #f59e0b; padding: 15px; border-radius: 8px; margin-bottom: 12px; }
-    .box-banque { background-color: #eff6ff; border-left: 4px solid #3b82f6; padding: 15px; border-radius: 8px; }
     </style>
     """, unsafe_allow_html=True)
 
@@ -162,7 +158,10 @@ with tab_prono:
         cotes_actuelles = get_cotes(j_prono)
         
         with st.form(key=f"form_pronostics_{j_prono}"):
-            nom_input = st.text_input("Ton Prénom & Nom", key=f"input_nom_{j_prono}").strip()
+            # Champ Prénom/Nom avec placeholder exemple en minuscules
+            nom_raw = st.text_input("Ton Prénom & Nom", placeholder="lucas b", key=f"input_nom_{j_prono}")
+            nom_input = nom_raw.strip().lower()
+            
             pronos = {}
             for m in MATCH_NAMES:
                 cN, cA = cotes_actuelles[m]
@@ -177,14 +176,14 @@ with tab_prono:
             
             if submit:
                 if not nom_input:
-                    st.error("⚠️ Renseigne ton nom.")
+                    st.error("⚠️ Renseigne ton prénom.")
                 else:
                     df_v = load_sheet("votes", ["Journee", "Joueur"] + MATCH_NAMES + ["ScoreFinalProno"])
                     
                     deja_vote = False
                     if not df_v.empty:
                         votes_j = df_v[df_v["Journee"].astype(str) == str(j_prono)]
-                        deja_vote = (votes_j["Joueur"].astype(str).str.lower() == nom_input.lower()).any()
+                        deja_vote = (votes_j["Joueur"].astype(str).str.strip().str.lower() == nom_input).any()
 
                     if deja_vote:
                         st.warning(f"⚠️ Ton vote pour la {j_prono} est déjà enregistré !")
@@ -197,7 +196,7 @@ with tab_prono:
                         
                         df_v = pd.concat([df_v, pd.DataFrame([nv])], ignore_index=True)
                         save_sheet("votes", df_v)
-                        st.success(f"Vote enregistré avec succès pour la {j_prono} ! Score pronostiqué : {score_p}")
+                        st.success(f"Vote enregistré avec succès pour **{nom_input}** ({j_prono}) ! Score pronostiqué : {score_p}")
                         st.balloons()
 
 # ---------------------------------------------------------
@@ -207,7 +206,11 @@ with tab_class:
     st.subheader("🏆 Classement Général")
     df_scores = load_sheet("classement", ["Joueur", "Points", "AncienRang"])
     if not df_scores.empty:
+        # Conversion du nom en minuscules pour regroupement
+        df_scores["Joueur"] = df_scores["Joueur"].astype(str).str.strip().str.lower()
         df_scores["Points"] = pd.to_numeric(df_scores["Points"])
+        df_scores = df_scores.groupby("Joueur", as_index=False).agg({"Points": "sum", "AncienRang": "first"})
+        
         df_scores = df_scores.sort_values(by="Points", ascending=False).reset_index(drop=True)
         df_scores["Rang"] = df_scores.index + 1
         
@@ -222,7 +225,7 @@ with tab_class:
         st.info("Aucun résultat validé pour le moment.")
 
 # ---------------------------------------------------------
-# 3. STATISTIQUES SAISON (ADAPTÉ DU COMPOSANT REACT)
+# 3. STATISTIQUES SAISON
 # ---------------------------------------------------------
 with tab_stats:
     df_v = load_sheet("votes", ["Journee", "Joueur"] + MATCH_NAMES + ["ScoreFinalProno"])
@@ -231,10 +234,13 @@ with tab_stats:
     if df_res.empty or df_v.empty:
         st.info("Les statistiques apparaîtront dès la première journée validée.")
     else:
+        # Normalisation systématique en minuscules
+        df_v["Joueur"] = df_v["Joueur"].astype(str).str.strip().str.lower()
+        
         j_validees = df_res["Journee"].astype(str).unique().tolist()
         df_v_valid = df_v[df_v["Journee"].astype(str).isin(j_validees)]
 
-        # --- SECTION 1 : Pronostics vs Réalité par Match ---
+        # --- TABLEAU 1 : Pronostics vs Réalité par Match ---
         st.markdown("""
         <div class="card-box">
             <h3 style="margin:0; font-weight:bold;">📊 1. Pronostics vs Réalité par Match (Saint-Nolff)</h3>
@@ -263,22 +269,10 @@ with tab_stats:
             pct_prono = round((votes_nolff_m / total_votes_m) * 100) if total_votes_m > 0 else 0
             pct_reel = round((victoires_reelles_nolff / total_matchs_joues) * 100) if total_matchs_joues > 0 else 0
 
-            # Calcul du taux de succès global des joueurs sur ce match (pour la section imprévisibilité)
-            bons_pronos = 0
-            for j in j_validees:
-                res_j = df_res[df_res["Journee"].astype(str) == str(j)]
-                v_j = df_v_valid[df_v_valid["Journee"].astype(str) == str(j)]
-                if not res_j.empty and not v_j.empty:
-                    vrai = res_j.iloc[0][m]
-                    bons_pronos += sum(1 for v in v_j[m] if v == vrai)
-
-            acc_rate = round((bons_pronos / total_votes_m) * 100) if total_votes_m > 0 else 0
-
             matches_stats.append({
                 "match": m,
                 "prono": pct_prono,
-                "reel": pct_reel,
-                "accuracy": acc_rate
+                "reel": pct_reel
             })
 
         df_m_display = pd.DataFrame(matches_stats)
@@ -286,7 +280,7 @@ with tab_stats:
         df_m_display["Victoire Réelle St-Nolff (%)"] = df_m_display["reel"].apply(lambda x: f"{x} %")
         st.table(df_m_display[["match", "Prono St-Nolff (%)", "Victoire Réelle St-Nolff (%)"]].set_index("match"))
 
-        # --- SECTION 2 : Classement au Taux de Réussite ---
+        # --- TABLEAU 2 : Classement au Taux de Réussite (Unique par prénom minuscule) ---
         st.markdown("""
         <div class="card-box">
             <h3 style="margin:0; font-weight:bold;">🎯 2. Classement au Taux de Réussite (Précision)</h3>
@@ -296,8 +290,6 @@ with tab_stats:
 
         player_stats = []
         joueurs_uniques = df_v_valid["Joueur"].unique()
-        
-        # Nombre total de matchs joués jusqu'à présent dans la saison
         total_matchs_saison = len(j_validees) * len(MATCH_NAMES)
 
         for player in joueurs_uniques:
@@ -336,36 +328,7 @@ with tab_stats:
                 "rate": "Taux de Réussite"
             }).set_index("Rang"))
 
-        # --- SECTION 3 : Analyse d'Imprévisibilité ---
-        st.markdown("""
-        <div class="card-box">
-            <h3 style="margin:0; font-weight:bold;">🔮 3. Analyse d'Imprévisibilité des Matchs</h3>
-            <p style="font-size: 13px; color: #6b7280; font-style: italic; margin-top:2px;">Basé sur le taux de réussite global des pronostics.</p>
-        </div>
-        """, unsafe_allow_html=True)
-
-        if matches_stats:
-            sorted_by_acc = sorted(matches_stats, key=lambda x: x["accuracy"])
-            hardest = sorted_by_acc[0]
-            easiest = sorted_by_acc[-1]
-
-            st.markdown(f"""
-            <div class="box-piege">
-                <h4 style="margin:0; color:#92400e; font-weight:bold;">🌀 Le Match le plus Imprévisible</h4>
-                <p style="font-size: 16px; font-weight: bold; color: #b45309; margin: 4px 0;">{hardest['match']}</p>
-                <p style="margin:0; color:#78350f; font-size:14px;">
-                    🎯 <b>Seulement {hardest['accuracy']} %</b> des joueurs ont trouvé les bons résultats sur ce type de match.
-                </p>
-            </div>
-
-            <div class="box-banque">
-                <h4 style="margin:0; color:#1e40af; font-weight:bold;">🔒 Le Match le plus Prévisible</h4>
-                <p style="font-size: 16px; font-weight: bold; color: #1d4ed8; margin: 4px 0;">{easiest['match']}</p>
-                <p style="margin:0; color:#1e3a8a; font-size:14px;">
-                    🎯 <b>{easiest['accuracy']} %</b> des pronostics ont vu juste sur ce match !
-                </p>
-            </div>
-            """, unsafe_allow_html=True)
+        # (Le Tableau 3 / Analyse d'Imprévisibilité a été supprimé)
 
 # ---------------------------------------------------------
 # 4. ADMINISTRATION
@@ -427,11 +390,12 @@ with tab_admin:
                 
                 if not votes_c.empty:
                     if not df_gen.empty:
+                        df_gen["Joueur"] = df_gen["Joueur"].astype(str).str.strip().str.lower()
                         df_gen = df_gen.sort_values(by="Points", ascending=False).reset_index(drop=True)
                         df_gen["AncienRang"] = df_gen.index + 1
                     
                     for _, row in votes_c.iterrows():
-                        j_nom = row['Joueur']
+                        j_nom = str(row['Joueur']).strip().lower()
                         bons = 0
                         pts_jour = 0
                         for m in MATCH_NAMES:
@@ -442,7 +406,7 @@ with tab_admin:
                         if bons == 8: pts_jour += 100
                         if str(row.get('ScoreFinalProno')) == score_reel: pts_jour += 100
                         
-                        mask = df_gen['Joueur'].astype(str).str.lower() == j_nom.lower()
+                        mask = df_gen['Joueur'].astype(str).str.lower() == j_nom
                         if mask.any(): 
                             df_gen.loc[mask, 'Points'] = df_gen.loc[mask, 'Points'].astype(int) + pts_jour
                         else: 
@@ -480,6 +444,7 @@ with tab_admin:
             if df_v.empty:
                 st.info("Aucun pronostic n'a encore été enregistré.")
             else:
+                df_v["Joueur"] = df_v["Joueur"].astype(str).str.strip().str.lower()
                 df_filtered = df_v[df_v["Journee"].astype(str) == str(j_consultee)]
                 st.write(f"**Total votes enregistrés pour {j_consultee} :** {len(df_filtered)}")
                 if not df_filtered.empty:
