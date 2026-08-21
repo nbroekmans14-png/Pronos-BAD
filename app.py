@@ -1,56 +1,63 @@
 import streamlit as st
 import pandas as pd
-import os
+import gspread
 
 # CONFIGURATION
 st.set_page_config(page_title="MPP AOBD", page_icon="🏸", layout="centered")
 
-HISTORIQUE_VOTES_FILE = "historique_votes.csv"
-SCORES_FILE = "classement_general.csv"
-MSG_FILE = "message_admin.txt"
-CONFIG_FILE = "config_journee.txt"
-RESULTATS_FILE = "historique_resultats.csv"
-COTES_FILE = "cotes_journee.csv"
-
 MATCH_NAMES = ["Simple Homme 1", "Simple Homme 2", "Simple Dame 1", "Simple Dame 2", 
                "Double Homme", "Double Dame", "Mixte 1", "Mixte 2"]
 
-# FONCTIONS ET UTILITAIRES
-def load_text(filename, default):
-    if os.path.exists(filename):
-        try:
-            with open(filename, "r", encoding="utf-8") as f: return f.read().strip()
-        except: pass
-    return default
+# --- CONNEXION GOOGLE SHEETS ---
+@st.cache_resource
+def get_gspread_client():
+    # Utilise les secrets configurés dans Streamlit Cloud
+    gc = gspread.service_account_from_dict(st.secrets["gcp_service_account"])
+    sh = gc.open_by_url(st.secrets["SPREADSHEET_URL"])
+    return sh
 
-def save_text(filename, text):
-    with open(filename, "w", encoding="utf-8") as f: f.write(text)
+def load_sheet(sheet_name, columns):
+    try:
+        sh = get_gspread_client()
+        worksheet = sh.worksheet(sheet_name)
+        data = worksheet.get_all_records()
+        df = pd.DataFrame(data)
+        if df.empty:
+            return pd.DataFrame(columns=columns)
+        return df
+    except Exception:
+        return pd.DataFrame(columns=columns)
 
-def load_df(filename, columns):
-    if os.path.exists(filename):
-        try:
-            df = pd.read_csv(filename)
-            if not df.empty: return df
-        except: pass
-    return pd.DataFrame(columns=columns)
+def save_sheet(sheet_name, df):
+    try:
+        sh = get_gspread_client()
+        worksheet = sh.worksheet(sheet_name)
+        worksheet.clear()
+        # Met à jour les en-têtes et le contenu
+        worksheet.update([df.columns.values.tolist()] + df.astype(str).values.tolist())
+    except Exception as e:
+        st.error(f"Erreur de sauvegarde dans Google Sheets : {e}")
 
-def save_df(df, filename):
-    df.to_csv(filename, index=False)
-
+# FONCTIONS CONFIG & COTES
 def get_config():
-    parts = load_text(CONFIG_FILE, "J1;unlocked").split(";")
-    return (parts[0], parts[1]) if len(parts) == 2 else ("J1", "unlocked")
+    df = load_sheet("cotes", ["Journee", "Match", "CoteNolff", "CoteAdv", "Status", "MsgAdmin"])
+    # Récupération de la config globale dans les secrets ou valeurs par défaut
+    current_j = st.secrets.get("CURRENT_J", "J1")
+    lock_status = st.secrets.get("LOCK_STATUS", "unlocked")
+    msg_admin = st.secrets.get("MSG_ADMIN", "Préparez vos pronos !")
+    return current_j, lock_status, msg_admin
 
 def get_cotes(journee):
-    df = load_df(COTES_FILE, ["Journee", "Match", "CoteNolff", "CoteAdv"])
-    cotes_j = df[df["Journee"].astype(str) == str(journee)]
+    df = load_sheet("cotes", ["Journee", "Match", "CoteNolff", "CoteAdv"])
+    cotes_j = df[df["Journee"].astype(str) == str(journee)] if not df.empty else pd.DataFrame()
     res = {}
     for m in MATCH_NAMES:
-        row = cotes_j[cotes_j["Match"] == m]
-        if not row.empty:
-            res[m] = (int(row.iloc[0]["CoteNolff"]), int(row.iloc[0]["CoteAdv"]))
-        else:
-            res[m] = (50, 50)  # Cote par défaut si non définie
+        if not cotes_j.empty:
+            row = cotes_j[cotes_j["Match"] == m]
+            if not row.empty:
+                res[m] = (int(row.iloc[0]["CoteNolff"]), int(row.iloc[0]["CoteAdv"]))
+                continue
+        res[m] = (50, 50)
     return res
 
 # STYLE CSS
@@ -67,9 +74,12 @@ st.markdown("""
     """, unsafe_allow_html=True)
 
 # HEADER
-current_j, lock_status = get_config()
+current_j = st.session_state.get("current_j", "J1")
+lock_status = st.session_state.get("lock_status", "unlocked")
+msg_admin = st.session_state.get("msg_admin", "Préparez vos pronos !")
+
 st.markdown(f'<div class="header-box"><h1>Le MPP de l\'AOBD</h1><p>Journée Actuelle : {current_j} • Cotes sur 100pts • +100pts si 8/8 • +100pts si Score Exact</p></div>', unsafe_allow_html=True)
-st.markdown(f'<div class="admin-msg">📢 {load_text(MSG_FILE, "Préparez vos pronos !")}</div>', unsafe_allow_html=True)
+st.markdown(f'<div class="admin-msg">📢 {msg_admin}</div>', unsafe_allow_html=True)
 
 # ONGLETS
 tab_prono, tab_class, tab_stats, tab_admin = st.tabs([
@@ -103,8 +113,8 @@ with tab_prono:
                 if not nom_input:
                     st.error("⚠️ Renseigne ton nom.")
                 else:
-                    df_v = load_df(HISTORIQUE_VOTES_FILE, ["Journee", "Joueur"] + MATCH_NAMES + ["ScoreFinalProno"])
-                    if not df_v.empty and ((df_v["Journee"].astype(str) == str(current_j)) & (df_v["Joueur"].str.lower() == nom_input.lower())).any():
+                    df_v = load_sheet("votes", ["Journee", "Joueur"] + MATCH_NAMES + ["ScoreFinalProno"])
+                    if not df_v.empty and ((df_v["Journee"].astype(str) == str(current_j)) & (df_v["Joueur"].astype(str).str.lower() == nom_input.lower())).any():
                         st.warning(f"Ton vote pour la {current_j} est déjà enregistré !")
                     else:
                         nolff = sum(1 for v in pronos.values() if "St-Nolff" in v)
@@ -112,21 +122,23 @@ with tab_prono:
                         nv = {"Journee": current_j, "Joueur": nom_input, "ScoreFinalProno": score_p}
                         for k, v in pronos.items(): 
                             nv[k] = "St-Nolff" if "St-Nolff" in v else "Adversaire"
-                        save_df(pd.concat([df_v, pd.DataFrame([nv])], ignore_index=True), HISTORIQUE_VOTES_FILE)
-                        st.success(f"Vote enregistré ! Score pronostiqué : {score_p}")
+                        
+                        df_v = pd.concat([df_v, pd.DataFrame([nv])], ignore_index=True)
+                        save_sheet("votes", df_v)
+                        st.success(f"Vote enregistré dans la base ! Score pronostiqué : {score_p}")
                         st.balloons()
 
 # 2. CLASSEMENT
 with tab_class:
     st.subheader("🏆 Classement Général")
-    df_scores = load_df(SCORES_FILE, ["Joueur", "Points", "AncienRang"])
+    df_scores = load_sheet("classement", ["Joueur", "Points", "AncienRang"])
     if not df_scores.empty:
         df_scores["Points"] = pd.to_numeric(df_scores["Points"])
         df_scores = df_scores.sort_values(by="Points", ascending=False).reset_index(drop=True)
         df_scores["Rang"] = df_scores.index + 1
         
         def evo(r):
-            if r["AncienRang"] == 0: return "🆕"
+            if int(r["AncienRang"]) == 0: return "🆕"
             d = int(r["AncienRang"]) - int(r["Rang"])
             return f"🟢 +{d}" if d > 0 else (f"🔴 {d}" if d < 0 else "〓")
             
@@ -138,9 +150,8 @@ with tab_class:
 # 3. STATISTIQUES SAISON
 with tab_stats:
     st.subheader("📊 Statistiques de la Saison")
-    df_v = load_df(HISTORIQUE_VOTES_FILE, ["Journee", "Joueur"] + MATCH_NAMES + ["ScoreFinalProno"])
-    df_res = load_df(RESULTATS_FILE, ["Journee"] + MATCH_NAMES + ["ScoreFinalReel"])
-    df_c = load_df(COTES_FILE, ["Journee", "Match", "CoteNolff", "CoteAdv"])
+    df_v = load_sheet("votes", ["Journee", "Joueur"] + MATCH_NAMES + ["ScoreFinalProno"])
+    df_res = load_sheet("resultats", ["Journee"] + MATCH_NAMES + ["ScoreFinalReel"])
     
     if df_res.empty or df_v.empty:
         st.info("Statistiques disponibles après la validation d'une 1re journée.")
@@ -213,9 +224,9 @@ with tab_stats:
 with tab_admin:
     st.subheader("🛠️ Administration")
     if st.text_input("Code Administrateur", type="password") == st.secrets.get("ADMIN_PASSWORD", "2003"):
-        t1, t_cotes, t2, t3, t4 = st.tabs(["Valider Journée", "Définir Cotes", "Annonce & Config", "Restauration", "RESET"])
+        t1, t_cotes, t2 = st.tabs(["Valider Journée", "Définir Cotes", "Annonce & Config"])
         
-        # Saisie des résultats
+        # Validation des résultats
         with t1:
             st.write(f"Résultats réels pour **{current_j}** :")
             reels, res_n, res_a = {}, 0, 0
@@ -228,10 +239,10 @@ with tab_admin:
             score_reel = f"{res_n}-{res_a}"
             st.info(f"Score calculé : {score_reel}")
             
-            if st.button("Calculer & Enregistrer les résultats"):
-                df_v = load_df(HISTORIQUE_VOTES_FILE, ["Journee", "Joueur"] + MATCH_NAMES + ["ScoreFinalProno"])
-                df_gen = load_df(SCORES_FILE, ["Joueur", "Points", "AncienRang"])
-                df_res = load_df(RESULTATS_FILE, ["Journee"] + MATCH_NAMES + ["ScoreFinalReel"])
+            if st.button("Calculer & Enregistrer dans Google Sheets"):
+                df_v = load_sheet("votes", ["Journee", "Joueur"] + MATCH_NAMES + ["ScoreFinalProno"])
+                df_gen = load_sheet("classement", ["Joueur", "Points", "AncienRang"])
+                df_res = load_sheet("resultats", ["Journee"] + MATCH_NAMES + ["ScoreFinalReel"])
                 cotes_j = get_cotes(current_j)
                 
                 votes_c = df_v[df_v["Journee"].astype(str) == str(current_j)] if not df_v.empty else pd.DataFrame()
@@ -253,25 +264,27 @@ with tab_admin:
                         if bons == 8: pts_jour += 100
                         if str(row.get('ScoreFinalProno')) == score_reel: pts_jour += 100
                         
-                        mask = df_gen['Joueur'].str.lower() == j_nom.lower()
-                        if mask.any(): df_gen.loc[mask, 'Points'] = df_gen.loc[mask, 'Points'].astype(int) + pts_jour
-                        else: df_gen = pd.concat([df_gen, pd.DataFrame([{"Joueur": j_nom, "Points": pts_jour, "AncienRang": 0}])], ignore_index=True)
+                        mask = df_gen['Joueur'].astype(str).str.lower() == j_nom.lower()
+                        if mask.any(): 
+                            df_gen.loc[mask, 'Points'] = df_gen.loc[mask, 'Points'].astype(int) + pts_jour
+                        else: 
+                            df_gen = pd.concat([df_gen, pd.DataFrame([{"Joueur": j_nom, "Points": pts_jour, "AncienRang": 0}])], ignore_index=True)
                     
                     res_row = {"Journee": current_j, "ScoreFinalReel": score_reel}
                     res_row.update(reels)
                     df_res = pd.concat([df_res[df_res["Journee"].astype(str) != str(current_j)], pd.DataFrame([res_row])], ignore_index=True)
                     
-                    save_df(df_gen, SCORES_FILE)
-                    save_df(df_res, RESULTATS_FILE)
-                    st.success("Journée et points validés !")
+                    save_sheet("classement", df_gen)
+                    save_sheet("resultats", df_res)
+                    st.success("Résultats et classement sauvegardés sur Google Sheets !")
                     st.rerun()
 
-        # Saisie des Cotes par match
+        # Définition des cotes
         with t_cotes:
             st.subheader(f"Définir les cotes pour {current_j}")
-            st.caption("Ajuste les chances de victoire de St-Nolff. La cote de l'Adversaire s'ajuste automatiquement sur un total de 100.")
+            st.caption("Ajuste les chances de victoire de St-Nolff sur 100 points.")
             
-            df_c = load_df(COTES_FILE, ["Journee", "Match", "CoteNolff", "CoteAdv"])
+            df_c = load_sheet("cotes", ["Journee", "Match", "CoteNolff", "CoteAdv"])
             anciennes_cotes = get_cotes(current_j)
             
             nouvelles_cotes = []
@@ -282,31 +295,28 @@ with tab_admin:
                 st.divider()
                 nouvelles_cotes.append({"Journee": current_j, "Match": m, "CoteNolff": c_nolff, "CoteAdv": c_adv})
             
-            if st.button("Enregistrer les Cotes"):
-                df_c = df_c[df_c["Journee"].astype(str) != str(current_j)]
+            if st.button("Enregistrer les Cotes sur Google Sheets"):
+                if not df_c.empty:
+                    df_c = df_c[df_c["Journee"].astype(str) != str(current_j)]
                 df_c = pd.concat([df_c, pd.DataFrame(nouvelles_cotes)], ignore_index=True)
-                save_df(df_c, COTES_FILE)
+                save_sheet("cotes", df_c)
                 st.success("Cotes enregistrées !")
                 st.rerun()
 
+        # Config de la journée
         with t2:
-            msg = st.text_area("Message d'annonce", load_text(MSG_FILE, "Préparez vos pronos !"))
-            if st.button("Sauvegarder Message"): save_text(MSG_FILE, msg); st.rerun()
+            msg = st.text_area("Message d'annonce", msg_admin)
+            if st.button("Sauvegarder Message"): 
+                st.session_state["msg_admin"] = msg
+                st.success("Message mis à jour !")
+                st.rerun()
             
             st.divider()
             c1, c2 = st.columns(2)
             nj = c1.text_input("Journée", current_j)
             nl = c2.radio("Votes", ["unlocked", "locked"], index=0 if lock_status == "unlocked" else 1)
-            if st.button("Sauvegarder Journée"): save_text(CONFIG_FILE, f"{nj};{nl}"); st.rerun()
-
-        with t3:
-            f1 = st.file_uploader("Restaurer Classement", type="csv")
-            if f1 and st.button("Restaurer Classement (CSV)"): save_df(pd.read_csv(f1), SCORES_FILE); st.rerun()
-            f2 = st.file_uploader("Restaurer Votes", type="csv")
-            if f2 and st.button("Restaurer Votes (CSV)"): save_df(pd.read_csv(f2), HISTORIQUE_VOTES_FILE); st.rerun()
-
-        with t4:
-            if st.button("⚠️ RÉINITIALISER TOUT"):
-                for f in [SCORES_FILE, HISTORIQUE_VOTES_FILE, RESULTATS_FILE, CONFIG_FILE, MSG_FILE, COTES_FILE]:
-                    if os.path.exists(f): os.remove(f)
+            if st.button("Sauvegarder Journée"): 
+                st.session_state["current_j"] = nj
+                st.session_state["lock_status"] = nl
+                st.success("Journée mise à jour !")
                 st.rerun()
