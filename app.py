@@ -296,27 +296,28 @@ with tab_stats:
 
         player_stats = []
         joueurs_uniques = df_v_valid["Joueur"].unique()
+        
+        # Nombre total de matchs joués jusqu'à présent dans la saison
+        total_matchs_saison = len(j_validees) * len(MATCH_NAMES)
 
         for player in joueurs_uniques:
             df_p = df_v_valid[df_v_valid["Joueur"] == player]
             correct = 0
-            total = 0
 
             for _, row in df_p.iterrows():
                 j = str(row["Journee"])
                 res_j = df_res[df_res["Journee"].astype(str) == j]
                 if not res_j.empty:
                     for m in MATCH_NAMES:
-                        total += 1
                         if row[m] == res_j.iloc[0][m]:
                             correct += 1
 
-            if total > 0:
-                rate_val = (correct / total) * 100
+            if total_matchs_saison > 0:
+                rate_val = (correct / total_matchs_saison) * 100
                 player_stats.append({
                     "player": player,
                     "correct": correct,
-                    "total": total,
+                    "total": total_matchs_saison,
                     "rate_num": rate_val,
                     "rate": f"{rate_val:.1f} %".replace(".", ",")
                 })
@@ -331,7 +332,7 @@ with tab_stats:
             st.table(df_p_rank[["Rang", "player", "correct", "total", "rate"]].rename(columns={
                 "player": "Joueur",
                 "correct": "Bonnes réponses",
-                "total": "Total Matchs",
+                "total": "Total Matchs Joués",
                 "rate": "Taux de Réussite"
             }).set_index("Rang"))
 
@@ -350,7 +351,7 @@ with tab_stats:
 
             st.markdown(f"""
             <div class="box-piege">
-                <h4 style="margin:0; color:#92400e; font-weight:bold;">🌀 Le Match le plus Imprévisible (Le Piège)</h4>
+                <h4 style="margin:0; color:#92400e; font-weight:bold;">🌀 Le Match le plus Imprévisible</h4>
                 <p style="font-size: 16px; font-weight: bold; color: #b45309; margin: 4px 0;">{hardest['match']}</p>
                 <p style="margin:0; color:#78350f; font-size:14px;">
                     🎯 <b>Seulement {hardest['accuracy']} %</b> des joueurs ont trouvé les bons résultats sur ce type de match.
@@ -358,7 +359,7 @@ with tab_stats:
             </div>
 
             <div class="box-banque">
-                <h4 style="margin:0; color:#1e40af; font-weight:bold;">🔒 Le Match le plus Prévisible (La Banque)</h4>
+                <h4 style="margin:0; color:#1e40af; font-weight:bold;">🔒 Le Match le plus Prévisible</h4>
                 <p style="font-size: 16px; font-weight: bold; color: #1d4ed8; margin: 4px 0;">{easiest['match']}</p>
                 <p style="margin:0; color:#1e3a8a; font-size:14px;">
                     🎯 <b>{easiest['accuracy']} %</b> des pronostics ont vu juste sur ce match !
