@@ -8,11 +8,18 @@ st.set_page_config(page_title="MPP AOBD", page_icon="🏸", layout="centered")
 MATCH_NAMES = ["Simple Homme 1", "Simple Homme 2", "Simple Dame 1", "Simple Dame 2", 
                "Double Homme", "Double Dame", "Mixte 1", "Mixte 2"]
 
-# --- CONNEXION GOOGLE SHEETS ---
+# --- CONNEXION GOOGLE SHEETS & NETTOYAGE CLE PEM ---
 @st.cache_resource
 def get_gspread_client():
-    # Utilise les secrets configurés dans Streamlit Cloud
-    gc = gspread.service_account_from_dict(st.secrets["gcp_service_account"])
+    creds = dict(st.secrets["gcp_service_account"])
+    
+    # Nettoyage automatique du format de la clé privée PEM
+    pk = str(creds["private_key"])
+    if "\\n" in pk:
+        pk = pk.replace("\\n", "\n")
+    creds["private_key"] = pk
+
+    gc = gspread.service_account_from_dict(creds)
     sh = gc.open_by_url(st.secrets["SPREADSHEET_URL"])
     return sh
 
@@ -33,19 +40,28 @@ def save_sheet(sheet_name, df):
         sh = get_gspread_client()
         worksheet = sh.worksheet(sheet_name)
         worksheet.clear()
-        # Met à jour les en-têtes et le contenu
         worksheet.update([df.columns.values.tolist()] + df.astype(str).values.tolist())
     except Exception as e:
-        st.error(f"Erreur de sauvegarde dans Google Sheets : {e}")
+        st.error(f"Erreur de sauvegarde dans Google Sheets ({sheet_name}) : {e}")
 
-# FONCTIONS CONFIG & COTES
+# GESTION DYNAMIQUE DE LA CONFIGURATION (JOURNÉE, LOCK, MESSAGE)
 def get_config():
-    df = load_sheet("cotes", ["Journee", "Match", "CoteNolff", "CoteAdv", "Status", "MsgAdmin"])
-    # Récupération de la config globale dans les secrets ou valeurs par défaut
-    current_j = st.secrets.get("CURRENT_J", "J1")
-    lock_status = st.secrets.get("LOCK_STATUS", "unlocked")
-    msg_admin = st.secrets.get("MSG_ADMIN", "Préparez vos pronos !")
-    return current_j, lock_status, msg_admin
+    df = load_sheet("config", ["Parametre", "Valeur"])
+    config_dict = {"current_j": "J1", "lock_status": "unlocked", "msg_admin": "Préparez vos pronos !"}
+    
+    if not df.empty:
+        for _, row in df.iterrows():
+            config_dict[str(row["Parametre"])] = str(row["Valeur"])
+            
+    return config_dict["current_j"], config_dict["lock_status"], config_dict["msg_admin"]
+
+def save_config(current_j, lock_status, msg_admin):
+    df = pd.DataFrame([
+        {"Parametre": "current_j", "Valeur": current_j},
+        {"Parametre": "lock_status", "Valeur": lock_status},
+        {"Parametre": "msg_admin", "Valeur": msg_admin}
+    ])
+    save_sheet("config", df)
 
 def get_cotes(journee):
     df = load_sheet("cotes", ["Journee", "Match", "CoteNolff", "CoteAdv"])
@@ -73,11 +89,10 @@ st.markdown("""
     </style>
     """, unsafe_allow_html=True)
 
-# HEADER
-current_j = st.session_state.get("current_j", "J1")
-lock_status = st.session_state.get("lock_status", "unlocked")
-msg_admin = st.session_state.get("msg_admin", "Préparez vos pronos !")
+# CHARGEMENT CONFIG
+current_j, lock_status, msg_admin = get_config()
 
+# HEADER
 st.markdown(f'<div class="header-box"><h1>Le MPP de l\'AOBD</h1><p>Journée Actuelle : {current_j} • Cotes sur 100pts • +100pts si 8/8 • +100pts si Score Exact</p></div>', unsafe_allow_html=True)
 st.markdown(f'<div class="admin-msg">📢 {msg_admin}</div>', unsafe_allow_html=True)
 
@@ -125,7 +140,7 @@ with tab_prono:
                         
                         df_v = pd.concat([df_v, pd.DataFrame([nv])], ignore_index=True)
                         save_sheet("votes", df_v)
-                        st.success(f"Vote enregistré dans la base ! Score pronostiqué : {score_p}")
+                        st.success(f"Vote enregistré ! Score pronostiqué : {score_p}")
                         st.balloons()
 
 # 2. CLASSEMENT
@@ -239,7 +254,7 @@ with tab_admin:
             score_reel = f"{res_n}-{res_a}"
             st.info(f"Score calculé : {score_reel}")
             
-            if st.button("Calculer & Enregistrer dans Google Sheets"):
+            if st.button("Calculer & Enregistrer les résultats"):
                 df_v = load_sheet("votes", ["Journee", "Joueur"] + MATCH_NAMES + ["ScoreFinalProno"])
                 df_gen = load_sheet("classement", ["Joueur", "Points", "AncienRang"])
                 df_res = load_sheet("resultats", ["Journee"] + MATCH_NAMES + ["ScoreFinalReel"])
@@ -276,7 +291,7 @@ with tab_admin:
                     
                     save_sheet("classement", df_gen)
                     save_sheet("resultats", df_res)
-                    st.success("Résultats et classement sauvegardés sur Google Sheets !")
+                    st.success("Résultats et classement sauvegardés !")
                     st.rerun()
 
         # Définition des cotes
@@ -303,20 +318,19 @@ with tab_admin:
                 st.success("Cotes enregistrées !")
                 st.rerun()
 
-        # Config de la journée
+        # Config de la journée (J1, J2, J3...)
         with t2:
             msg = st.text_area("Message d'annonce", msg_admin)
             if st.button("Sauvegarder Message"): 
-                st.session_state["msg_admin"] = msg
+                save_config(current_j, lock_status, msg)
                 st.success("Message mis à jour !")
                 st.rerun()
             
             st.divider()
             c1, c2 = st.columns(2)
-            nj = c1.text_input("Journée", current_j)
+            nj = c1.text_input("Journée (ex: J1, J2, J3...)", current_j)
             nl = c2.radio("Votes", ["unlocked", "locked"], index=0 if lock_status == "unlocked" else 1)
-            if st.button("Sauvegarder Journée"): 
-                st.session_state["current_j"] = nj
-                st.session_state["lock_status"] = nl
-                st.success("Journée mise à jour !")
+            if st.button("Sauvegarder Configuration Journée"): 
+                save_config(nj, nl, msg_admin)
+                st.success("Journée et verrouillage sauvegardés !")
                 st.rerun()
